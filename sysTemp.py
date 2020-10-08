@@ -13,11 +13,13 @@ class SystemTemperatures(QObject):
     signals = ObjectSignals()
     alarm = pyqtSignal()
     alarmRemoved = pyqtSignal()
+    failure = pyqtSignal()
 
-    def __init__(self, interval=1, alarm_temperature = 50):
+    def __init__(self, interval=1, alarm_temperature = 50, failure_temperature = 65):
         super().__init__()
         self.interval = 1000*interval
         self.threshold = alarm_temperature
+        self.fail_threshold = failure_temperature
         self.timer.timeout.connect(self.update)
         self.timer.start(self.interval)
         self.alarmed = False
@@ -27,11 +29,14 @@ class SystemTemperatures(QObject):
         try:
             cpu_temp = float(self.get_cpu_tempfunc())
             self.msg('info;T_CPU={:.1f}°C'.format(cpu_temp))
-            if (cpu_temp > self.threshold) and not self.alarmed:
+            if (cpu_temp > self.fail_threshold):
+                self.failure.emit()
+                self.msg("error;temperature gets too high")                
+            elif (cpu_temp > self.threshold) and not self.alarmed:
                 self.alarm.emit()
                 self.alarmed = True
                 self.msg("info;temperature alarm on")
-            if (cpu_temp < 0.95*self.threshold) and self.alarmed:
+            elif (cpu_temp < 0.95*self.threshold) and self.alarmed:
                 self.alarmRemoved.emit()
                 self.alarmed = False
                 self.msg("info;temperature alarm off")

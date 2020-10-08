@@ -105,6 +105,7 @@ if __name__ == "__main__":
     bp.setLogFileName.connect(lw.setLogFileName)
 
     # Connect closing signals
+    st.failure.connect(mw.close, type=Qt.QueuedConnection)
     bp.signals.finished.connect(mw.close, type=Qt.QueuedConnection)
     mw.signals.finished.connect(vs.stop, type=Qt.QueuedConnection)
     mw.signals.finished.connect(ip.stop, type=Qt.QueuedConnection)
