@@ -87,6 +87,8 @@ class BatchProcessor(QObject):
     takeSnapshot = pyqtSignal(str)
     recordClip = pyqtSignal(str, int)
     setLogFileName = pyqtSignal(str)
+    stopCamera = pyqtSignal()
+    startCamera = pyqtSignal()
 
     def __init__(self, batch_file_name):
         super().__init__()
@@ -100,6 +102,7 @@ class BatchProcessor(QObject):
         self.foundWellLocation = None
         self.lightLevel = 1.0 # initial value, will be set later by user
         self.adaptXY = False # Flag XY position update after initial adaption
+        self.sharpnessScore = 0
 
 
     def loadSettings(self):
@@ -194,6 +197,7 @@ class BatchProcessor(QObject):
         self.msg("info;{:s} run during {:d}s with {:d}s interleave".format(self.run_id, self.run_duration_s, self.run_wait_s))
 
         self.setLightPWM.emit(self.lightLevel)
+        self.startCamera.emit()
         self.msg("info;goto first well")
         self.gotoXY.emit(self.wells[0].location[0], self.wells[0].location[1], True)
         self.wait_signal(self.rPositionReached, 10000)
@@ -230,6 +234,7 @@ class BatchProcessor(QObject):
         ''' Timer call back function, als initiates next one-shot 
         '''
         start_run_time_s = time.time()
+        self.startCamera.emit()
         for well in self.wells:
             x, y, z = tuple(well.location)
             self.msg("info;gauging well {:s} at ({:.3f}, {:.3f}, {:.3f})".format(well.name, x,y,z))
@@ -277,8 +282,8 @@ class BatchProcessor(QObject):
             # TODO: adapt focus
             self.computeSharpnessScore.emit()
             self.wait_signal(self.rSharpnessScore, 10000)
-            well.sharpnessScore = self.sharpnessScore
-            well.sharpnessScore = round(well.sharpnessScore,3)
+##            well.sharpnessScore = self.rSharpnessScore
+            well.sharpnessScore = round(self.sharpnessScore,3)
             
             
             prefix = os.path.sep.join([self.storage_path, well.name, str(well.position) + "_" + str(well.location) + "_" + str(well.sharpnessScore)])
@@ -295,6 +300,7 @@ class BatchProcessor(QObject):
                 
         # Wrapup current round of acquisition     
         self.setLightPWM.emit(0.00)
+        self.stopCamera.emit()
         elapsed_total_time_s = time.time() - self.start_time_s
         elapsed_run_time_s = time.time() - start_run_time_s
         self.msg("info;single run time={:.1f}s".format(elapsed_run_time_s))
@@ -333,7 +339,7 @@ class BatchProcessor(QObject):
         self.rWellFound.emit()
 
     @pyqtSlot(float)
-    def sharpnessScore(self, score):
+    def setSharpnessScore(self, score):
         self.sharpnessScore = score
         self.msg("info;sharpnessScore signal received")        
         self.rSharpnessScore.emit()

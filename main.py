@@ -59,7 +59,9 @@ if __name__ == "__main__":
     bp.recordClip.connect(vs.recordClip, type=Qt.QueuedConnection)
     vs.clipRecorded.connect(bp.clipRecorded, type=Qt.QueuedConnection)
     bp.computeSharpnessScore.connect(ip.computeSharpnessScore, type=Qt.QueuedConnection)
-    ip.sharpnessScore.connect(bp.sharpnessScore, type=Qt.QueuedConnection)
+    ip.returnSharpnessScore.connect(bp.setSharpnessScore, type=Qt.QueuedConnection)
+    bp.stopCamera.connect(vs.stop, type=Qt.QueuedConnection)
+    bp.startCamera.connect(vs.initStream, type=Qt.QueuedConnection)
     
     # Connect GUI signals
     mw.runButton.clicked.connect(bp.start)

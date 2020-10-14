@@ -41,7 +41,7 @@ class ImageProcessor(QThread):
     confirmed = pyqtSignal() # internal signal
     diaphragmFound = pyqtSignal(np.ndarray)
     wellFound = pyqtSignal(np.ndarray)
-    sharpnessScore = pyqtSignal(float)
+    returnSharpnessScore = pyqtSignal(float)
     
 
     def __init__(self):
@@ -286,12 +286,15 @@ class ImageProcessor(QThread):
                             variance = 100*np.var(edge_laplace)
                             # maximum and variance of Laplacian are indicators of sharpness, maximum maybe noisy, so choose 90% percentile instead
 ##                            var(edge_laplace)/np.mean(edge_laplace)
-                            self.sharpnessScore.emit(sharpness)
+                            self.returnSharpnessScore.emit(sharpness)
 
                             self.msg("info;sharpness = {:.2f}, variance = {:.2f} in focus ROI ({:d},{:d}), ({:d},{:,d})".format(sharpness, variance, self.focusROI[0], self.focusROI[1], self.focusROI[2], self.focusROI[3]))
+                    else:
+                            self.returnSharpnessScore.emit(0)
+                            self.msg("error;sharpness unknown, no object found")
 
                 else:
-                    self.msg("error;diaphragm position is not known")
+                    self.msg("error;diaphragm position is unknown")
                         
             except Exception as err:
                 traceback.print_exc()

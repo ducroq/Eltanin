@@ -94,24 +94,27 @@ class PiVideoStream(QThread):
 ##        self.camera.meter_mode = 'average'
 ##        self.camera.exposure_mode = 'auto'  # 'sports' to reduce motion blur, 'off'after init to freeze settings
 
-
+    @pyqtSlot()
     def initStream(self):
-        # in case init gets called, while thread is running
+        # Initialize the camera stream
         if self.isRunning():
-            self.stop()
-        # init camera and open stream
-        if self.monochrome:
-##            self.camera.color_effects = (128,128) # return monochrome image, not required if we take Y frame only.
-            self.rawCapture = PiYArray(self.camera, size=self.camera.resolution)
-            self.stream = self.camera.capture_continuous(self.rawCapture, 'yuv', self.use_video_port)
+            # in case init gets called, while thread is running
+            self.msg("info; video stream is running already")
         else:
-            self.rawCapture = PiRGBArray(self.camera, size=self.camera.resolution)
-            self.stream = self.camera.capture_continuous(self.rawCapture, 'bgr', self.use_video_port)
-        # allocate memory 
-        self.frame = np.empty(self.camera.resolution + (1 if self.monochrome else 3,), dtype=np.uint8)
-        # restart thread
-        self.start()        
-        self.msg("info; camera initialized with frame size = " + str(self.camera.resolution))
+            # init camera and open stream
+            if self.monochrome:
+    ##            self.camera.color_effects = (128,128) # return monochrome image, not required if we take Y frame only.
+                self.rawCapture = PiYArray(self.camera, size=self.camera.resolution)
+                self.stream = self.camera.capture_continuous(self.rawCapture, 'yuv', self.use_video_port)
+            else:
+                self.rawCapture = PiRGBArray(self.camera, size=self.camera.resolution)
+                self.stream = self.camera.capture_continuous(self.rawCapture, 'bgr', self.use_video_port)
+            # allocate memory 
+            self.frame = np.empty(self.camera.resolution + (1 if self.monochrome else 3,), dtype=np.uint8)
+            # restart thread
+            self.start()
+            self.wait_ms(1000)
+            self.msg("info; video stream initialized with frame size = " + str(self.camera.resolution))
 
 
     @pyqtSlot()
@@ -140,8 +143,11 @@ class PiVideoStream(QThread):
             self.requestInterruption()
             self.wait_signal(self.signals.finished, 2000)        
         self.fps.stop()
-        self.quit()           
-        self.msg("info; approx. acquisition speed: {:.2f} fps".format(self.fps.fps()))
+        self.quit()
+##        self.frame.fill(0) # clear frame, not allowed since frame is read-only?
+##        self.signals.ready.emit()
+##        self.signals.result.emit(np.zeros(self.image_size)) # could produce an information image here
+        self.msg("info; video stream stopped, approx. acquisition speed: {:.2f} fps".format(self.fps.fps()))
         
 
     def msg(self, text):
