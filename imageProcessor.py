@@ -166,32 +166,36 @@ class ImageProcessor(QThread):
                 # Find outer contour                
                 contours, hierarchy = cv2.findContours(img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-                if len(contours)>0:
+                if len(contours)>0 and len(contours[0]) > 10:
                     # Parameterize circle
                     c = cv2.fitEllipse(contours[0])
-                    self.diaphragm = np.array((round(c[0][0]), round(c[0][1]), round((c[1][0]+c[1][1])/4)), dtype='int')                    
-                
-                    # Compute camera resolution and shift from known diaphragm size and position
-                    resolution = 2*self.diaphragm[2] / float(self.settings.value('diaphragm/diameter_in_mm')) # [px/mm]
-                    shift_x_mm = (self.diaphragm[0] - .5*img.shape[0])/resolution
-                    shift_y_mm = (self.diaphragm[1] - .5*img.shape[1])/resolution
-
-                    # Compute expected well parameters
-                    self.minRadius = int(.9*self.diaphragm[2])
-                    self.maxRadius = int(1.1*self.diaphragm[2])
-                    self.minDistance = int(min(img.shape)/self.minRadius) # find as many circles as reasonably possible                    
-
-                    # Store system settings
-                    self.settings.setValue('camera/resolution_in_px_per_mm', '{:.1f}'.format(resolution))
-                    self.settings.setValue('camera/shift_x_in_mm', '{:.1f}'.format(shift_x_mm))
-                    self.settings.setValue('camera/shift_y_in_mm', '{:.1f}'.format(shift_y_mm))
-                    self.settings.setValue('diaphragm/centre_wrt_image_origin_in_px', '{:d},{:d}'.format(self.diaphragm[0], self.diaphragm[1]))
-                    self.settings.setValue('diaphragm/diameter_in_px', '{:d}'.format(self.diaphragm[2]))
-
-                    self.msg("info;diaphragm found at: (" + str(self.diaphragm[0]) + " | " + str(self.diaphragm[1]) + "). Radius: " + str(self.diaphragm[2]))
-                    self.msg("info;camera resolution estimated at {:.1f} px/mm".format(resolution))
+                    self.diaphragm = np.array((round(c[0][0]), round(c[0][1]), round((c[1][0]+c[1][1])/4)), dtype='int')
                 else:
-                    self.msg("error;no diaphragm found")
+                    # fake a diaphragm
+                    self.msg("error;no diaphragm found, so faking one at image centre")
+                    self.diaphragm = np.array((round(self.image.shape[1]/2), round(self.image.shape[0]/2), \
+                                                round(0.9*self.image.shape[0]/2)), dtype='int')
+                    
+                # Compute camera resolution and shift from known diaphragm size and position
+                resolution = 2*self.diaphragm[2] / float(self.settings.value('diaphragm/diameter_in_mm')) # [px/mm]
+                shift_x_mm = (self.diaphragm[0] - .5*img.shape[0])/resolution
+                shift_y_mm = (self.diaphragm[1] - .5*img.shape[1])/resolution
+
+                # Compute expected well parameters
+                self.minRadius = int(.9*self.diaphragm[2])
+                self.maxRadius = int(1.1*self.diaphragm[2])
+                self.minDistance = int(min(img.shape)/self.minRadius) # find as many circles as reasonably possible
+
+                # Store system settings
+                self.settings.setValue('camera/resolution_in_px_per_mm', '{:.1f}'.format(resolution))
+                self.settings.setValue('camera/shift_x_in_mm', '{:.1f}'.format(shift_x_mm))
+                self.settings.setValue('camera/shift_y_in_mm', '{:.1f}'.format(shift_y_mm))
+                self.settings.setValue('diaphragm/centre_wrt_image_origin_in_px', '{:d},{:d}'.format(self.diaphragm[0], self.diaphragm[1]))
+                self.settings.setValue('diaphragm/diameter_in_px', '{:d}'.format(self.diaphragm[2]))
+
+                self.msg("info;diaphragm found at: (" + str(self.diaphragm[0]) + " | " + str(self.diaphragm[1]) + "). Radius: " + str(self.diaphragm[2]))
+                self.msg("info;camera resolution estimated at {:.1f} px/mm".format(resolution))
+
                 self.diaphragmFound.emit(self.diaphragm)
             except Exception as err:
                 traceback.print_exc()
@@ -248,53 +252,59 @@ class ImageProcessor(QThread):
         if self.image is not None:
             try:
                 self.msg("info;computing sharpness")
-                if self.diaphragm is not None:
-                    ROI_leg = int(round(self.diaphragm[2]/sqrt(2)))
-                    
-                    # crop image
-                    ROI = [self.diaphragm[0] - ROI_leg, self.diaphragm[1] - ROI_leg,
+
+                # Compute ROI
+                if self.diaphragm is None:
+                    ROI_leg = int(round(self.image.shape[0]/2))
+                    ROI = [round(self.image.shape[1]/2) - ROI_leg,
+                           round(self.image.shape[0]/2) - ROI_leg,
                            2*ROI_leg, 2*ROI_leg]
-                    img = self.image[ROI[1]:ROI[1]+ROI[3], ROI[0]:ROI[0]+ROI[2]]
-
-                    # find blobs
-                    img = cv2.bilateralFilter(img,10,20,50)
-                    bw_img = cv2.adaptiveThreshold(img, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV,5,2)
-                    _, _, stats, centroids = cv2.connectedComponentsWithStats(bw_img)
-
-                    # select blobs with right size
-                    minBlobArea = 10**2
-                    maxBlobArea = int((ROI_leg/10)**2)
-                    ROIareas = stats[:,2]*stats[:,3]
-                    indices = np.where( (ROIareas > minBlobArea) & (ROIareas < maxBlobArea) )[0]                    
-                    
-                    if len(indices) > 0:
-                            # select single blob closest to centroid
-                            dist = np.linalg.norm(centroids - [ROI_leg,ROI_leg],axis=1)
-                            index = indices[np.argmin(dist[indices])]
-
-                            # define and shift wrt ROI
-                            blobROI = stats[index]
-                            self.focusROI = blobROI
-                            self.focusROI[0] += ROI[0]
-                            self.focusROI[1] += ROI[1]
-                            
-                            # sharpness computation
-                            img = img[ROI[1]:ROI[1]+ROI[3], ROI[0]:ROI[0]+ROI[2]]
-                            norm_img = cv2.normalize(img, None, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_32F)
-                            edge_laplace = cv2.Laplacian(norm_img, ddepth=cv2.CV_32F, ksize=3)
-                            sharpness = 100*np.percentile(edge_laplace, 90)
-                            variance = 100*np.var(edge_laplace)
-                            # maximum and variance of Laplacian are indicators of sharpness, maximum maybe noisy, so choose 90% percentile instead
-##                            var(edge_laplace)/np.mean(edge_laplace)
-                            self.returnSharpnessScore.emit(sharpness)
-
-                            self.msg("info;sharpness = {:.2f}, variance = {:.2f} in focus ROI ({:d},{:d}), ({:d},{:,d})".format(sharpness, variance, self.focusROI[0], self.focusROI[1], self.focusROI[2], self.focusROI[3]))
-                    else:
-                            self.returnSharpnessScore.emit(0)
-                            self.msg("error;sharpness unknown, no object found")
-
                 else:
-                    self.msg("error;diaphragm position is unknown")
+                    ROI_leg = int(round(self.diaphragm[2]/sqrt(2)))
+                    ROI = [self.diaphragm[0] - ROI_leg,
+                           self.diaphragm[1] - ROI_leg,
+                           2*ROI_leg, 2*ROI_leg]                      
+                
+                # crop image
+                img = self.image[ROI[1]:ROI[1]+ROI[3], ROI[0]:ROI[0]+ROI[2]]
+
+                # find blobs
+                img = cv2.bilateralFilter(img,10,20,50)
+                bw_img = cv2.adaptiveThreshold(img, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV,5,2)
+                _, _, stats, centroids = cv2.connectedComponentsWithStats(bw_img)
+
+                # select blobs with right size
+                minBlobArea = 10**2
+                maxBlobArea = int((ROI_leg/10)**2)
+                ROIareas = stats[:,2]*stats[:,3]
+                indices = np.where( (ROIareas > minBlobArea) & (ROIareas < maxBlobArea) )[0]                    
+
+                if len(indices) > 0:
+                    # select single blob closest to centroid
+                    dist = np.linalg.norm(centroids - [ROI_leg,ROI_leg],axis=1)
+                    index = indices[np.argmin(dist[indices])]
+
+                    # define and shift wrt ROI
+                    blobROI = stats[index]
+                    self.focusROI = blobROI
+                    self.focusROI[0] += ROI[0]
+                    self.focusROI[1] += ROI[1]
+                    
+                    # sharpness computation
+                    img = img[blobROI[1]:blobROI[1]+blobROI[3], blobROI[0]:blobROI[0]+blobROI[2]]
+                    norm_img = cv2.normalize(img, None, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_32F)
+                    edge_laplace = cv2.Laplacian(norm_img, ddepth=cv2.CV_32F, ksize=3)
+                    sharpness = 100*np.percentile(edge_laplace, 90)
+                    variance = 100*np.var(edge_laplace)
+                    # maximum and variance of Laplacian are indicators of sharpness, maximum maybe noisy, so choose 90% percentile instead
+                ##                            var(edge_laplace)/np.mean(edge_laplace)
+                    self.returnSharpnessScore.emit(sharpness)
+
+                    self.msg("info;sharpness = {:.2f}, variance = {:.2f} in focus ROI ({:d},{:d}), ({:d},{:,d})".format(sharpness, variance, self.focusROI[0], self.focusROI[1], self.focusROI[2], self.focusROI[3]))
+                else:
+                    self.returnSharpnessScore.emit(0)
+                    self.msg("error;sharpness unknown, no object found")
+
                         
             except Exception as err:
                 traceback.print_exc()

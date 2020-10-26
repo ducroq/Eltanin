@@ -35,6 +35,7 @@ class PrintHat(QThread):
         self.is_paused = True # Serial read communication thread is pauses
         self.is_homed = False # PrintHat motors have been homed
         self.is_ready = False # Printhat and klipper are ready
+        self.has_arrived = False # latest position ahs been arrived
         self.position_x = None # last known position
         self.position_y = None
         self.position_z = None        
@@ -246,8 +247,8 @@ class PrintHat(QThread):
             self.wait_signal(self.confirmed, 60000)
             # wait until we have really reached home, this can take a while
             for i in range(0,10): # limit the number of tries
-                if self.isFinished():
-                    break
+##                if self.isFinished():
+##                    break
                 self.getPosition()
                 if self.position_x is None or self.position_y is None or self.position_z is None:
                     self.wait_ms(500) # homing is slow, so wait a bit
@@ -281,17 +282,22 @@ class PrintHat(QThread):
         gcode_string += " Y{:.3f}".format(y) if y is not None else ""
         gcode_string += " Z{:.3f}".format(z) if z is not None else ""
         self.sendGcode(gcode_string)
-        self.wait_signal(self.confirmed, 1000)
+        self.wait_signal(self.confirmed, 10000)
         
-        # initiate homing, if necessary
+        # if printhat returns error, initiate homing, and resend G-code
         if not self.is_homed:
             self.homeXYZ()
-            self.sendGcode(gcode_string)            
+            self.sendGcode(gcode_string)
+            self.wait_signal(self.confirmed, 10000)
 
-        # wait until we have really reached location
+        # wait until we have really reached the desired location
+## for some reason the slot can be re-invoked when this loop has not finished,
+##        causing a mismatch between the function parameters and the actual positions
+        
+        prev_x, prev_y, prev_z = 0,0,0
         for i in range(0,10): # limit the number of tries
-            if self.isFinished():
-                break
+##            if self.isFinished():
+##                break
             self.wait_ms(10)
             self.getPosition()
             if self.position_x is not None and self.position_y is not None and self.position_z is not None:
@@ -299,10 +305,16 @@ class PrintHat(QThread):
                 error += (self.position_x-x)**2 if x is not None else 0
                 error += (self.position_y-y)**2 if y is not None else 0
                 error += (self.position_z-z)**2 if z is not None else 0
-                if sqrt(error) < self.eps:
+                if sqrt(error) < self.eps \
+                   or ( abs(self.position_x-prev_x) < self.eps and \
+                        abs(self.position_y-prev_y) < self.eps and \
+                        abs(self.position_z-prev_z) < self.eps ):
                     self.msg("info;gotoXYZ confirmed")
                     self.positionReached.emit()
-                    break                
+                    break
+                else:
+                    prev_x, prev_y, prev_z = self.position_x, self.position_y, self.position_z
+
 
             
     @pyqtSlot(float, float, bool)

@@ -9,9 +9,10 @@ import re
 import time
 import traceback
 import numpy as np
+import smtplib, ssl
 from math import sqrt
 from PyQt5.QtCore import QSettings, QObject, QTimer, QEventLoop, pyqtSignal, pyqtSlot
-from PyQt5.QtWidgets import QDialog, QFileDialog, QPushButton, QLabel, QSpinBox, QDoubleSpinBox, QVBoxLayout
+from PyQt5.QtWidgets import QDialog, QFileDialog, QPushButton, QLabel, QSpinBox, QDoubleSpinBox, QVBoxLayout, QGridLayout
 from objectSignals import ObjectSignals
 
 
@@ -62,6 +63,65 @@ class FocusDialog(QDialog):
     @pyqtSlot()
     def okclicked(self):
         self.accept()
+
+
+class ManualPositioningDialog(QDialog):
+
+    def __init__(self, x=0,y=0,z=0):
+        super(ManualPositioningDialog, self).__init__()
+
+        self.setWindowTitle("Manual positioning")
+        self.instruction = QLabel("Please focus on well A1, adjust illumination intensity and press OK when done")
+
+        self.light = QSpinBox(self)
+        self.lightTitle = QLabel("light")
+        self.light.setSuffix("%")
+        self.light.setMinimum(0)
+        self.light.setMaximum(100)
+        self.light.setSingleStep(1)
+        self.stageXTranslation = QDoubleSpinBox(self)
+        self.stageXTranslationTitle = QLabel("X Translation")
+        self.stageXTranslation.setSuffix("mm")
+        self.stageXTranslation.setMinimum(0.0)
+        self.stageXTranslation.setMaximum(100)
+        self.stageXTranslation.setSingleStep(0.1)
+        self.stageXTranslation.setValue(x)
+        self.stageYTranslation = QDoubleSpinBox(self)
+        self.stageYTranslationTitle = QLabel("Y Translation")
+        self.stageYTranslation.setSuffix("mm")
+        self.stageYTranslation.setMinimum(0.0)
+        self.stageYTranslation.setMaximum(100)
+        self.stageYTranslation.setSingleStep(0.1)
+        self.stageYTranslation.setValue(y)
+        self.stageZTranslation = QDoubleSpinBox(self)
+        self.stageZTranslationTitle = QLabel("Z Translation")
+        self.stageZTranslation.setSuffix("mm")
+        self.stageZTranslation.setMinimum(0.0)
+        self.stageZTranslation.setMaximum(50)
+        self.stageZTranslation.setSingleStep(0.01)
+        self.stageZTranslation.setValue(z)
+
+        self.okButton = QPushButton("OK")
+        self.okButton.clicked.connect(self.okclicked)
+
+        layout = QVBoxLayout()
+        layout.addWidget(self.instruction)
+        layout2 = QGridLayout()
+        layout2.addWidget(self.stageXTranslationTitle,0,0)
+        layout2.addWidget(self.stageXTranslation,0,1)
+        layout2.addWidget(self.stageYTranslationTitle,1,0)
+        layout2.addWidget(self.stageYTranslation,1,1)
+        layout2.addWidget(self.stageZTranslationTitle,2,0)
+        layout2.addWidget(self.stageZTranslation,2,1)
+        layout.addLayout(layout2)
+        layout.addWidget(self.lightTitle)
+        layout.addWidget(self.light)
+        layout.addWidget(self.okButton)
+        self.setLayout(layout)
+
+    @pyqtSlot()
+    def okclicked(self):
+        self.accept()        
   
         
 class BatchProcessor(QObject):
@@ -70,9 +130,10 @@ class BatchProcessor(QObject):
     '''
     signals = ObjectSignals()
     setLightPWM = pyqtSignal(float) # control signal
-    gotoXY = pyqtSignal(float, float, bool)
+    gotoXY = pyqtSignal(float, float, bool) # boolean indicate relative to stage origin or not
     gotoX = pyqtSignal(float, bool)
     gotoY = pyqtSignal(float, bool)
+    gotoZ = pyqtSignal(float)
     findDiaphragm = pyqtSignal()
     disableMotors = pyqtSignal()
     findWell = pyqtSignal()
@@ -83,7 +144,6 @@ class BatchProcessor(QObject):
     rDiaphragmFound = pyqtSignal() # repeat signal
     rClipRecorded = pyqtSignal() # repeat signal
     rPositionReached = pyqtSignal() # repeat signal
-    gotoZ = pyqtSignal(float)
     takeSnapshot = pyqtSignal(str)
     recordClip = pyqtSignal(str, int)
     setLogFileName = pyqtSignal(str)
@@ -101,7 +161,6 @@ class BatchProcessor(QObject):
         self.foundDiaphragmLocation = None
         self.foundWellLocation = None
         self.lightLevel = 1.0 # initial value, will be set later by user
-        self.adaptXY = False # Flag XY position update after initial adaption
         self.sharpnessScore = 0
 
 
@@ -130,18 +189,18 @@ class BatchProcessor(QObject):
         self.videoclip_length = int(self.batch_settings.value('run/clip_length'))
         self.accepted_location_error_mm = float(self.batch_settings.value('run/accepted_location_error_mm'))
         
-        # load well-plate dimensions
+        # load well-plate dimensions and compute well locations
         self.plate_note = self.batch_settings.value('plate/note')
-        plate_nr_of_cols = int(self.batch_settings.value('plate/columns'))
-        plate_nr_of_rows = int(self.batch_settings.value('plate/rows'))
-        plate_length = float(self.batch_settings.value('plate/length'))
-        plate_width = float(self.batch_settings.value('plate/width'))
-        plate_p1 = float(self.batch_settings.value('plate/p1'))
-        plate_p2 = float(self.batch_settings.value('plate/p2'))
-        plate_p3 = float(self.batch_settings.value('plate/p3'))
-        plate_p4 = float(self.batch_settings.value('plate/p4'))
-        self.first_well_location = [plate_p1, plate_p2]
+        self.nr_of_columns = int(self.batch_settings.value('plate/nr_of_columns'))
+        self.nr_of_rows = int(self.batch_settings.value('plate/nr_of_rows'))
+        self.A1_to_side_offset = float(self.batch_settings.value('plate/A1_to_side_offset'))
+        self.well_spacing = float(self.batch_settings.value('plate/well_spacing'))
+        self.A1_to_top_offset = float(self.batch_settings.value('plate/A1_to_top_offset'))
 
+        self.computeWellLocations()
+
+
+    def computeWellLocations(self):
         # load the wells to process
         nr_of_wells = self.batch_settings.beginReadArray("wells")
         self.wells = []
@@ -152,8 +211,11 @@ class BatchProcessor(QObject):
             r = re.split('(\d+)', well_id)
             row = ord(r[0].lower()) - 96
             col = int(r[1])
-            location_mm = [plate_p1 + (col-1)*plate_p2, plate_p3 + (row-1)*plate_p4, 0]
+            location_mm = [round(self.A1_to_side_offset + (col-1)*self.well_spacing, 2), \
+                           round(self.A1_to_top_offset  + (row-1)*self.well_spacing, 2), \
+                           0]
             self.wells.append(Well(name=well_id, position=[row, col], location=location_mm))
+        self.batch_settings.endArray() # close array
 
 
     def msg(self, text):
@@ -196,37 +258,40 @@ class BatchProcessor(QObject):
         self.msg("info;{:d} wells found in {:s}".format(len(self.wells),self.batch_settings.fileName()))
         self.msg("info;{:s} run during {:d}s with {:d}s interleave".format(self.run_id, self.run_duration_s, self.run_wait_s))
 
-        self.setLightPWM.emit(self.lightLevel)
+        self.setLightPWM.emit(0)
         self.startCamera.emit()
         self.msg("info;goto first well")
-        self.gotoXY.emit(self.wells[0].location[0], self.wells[0].location[1], True)
+        x = self.wells[0].location[0]
+        y = self.wells[0].location[1]
+        z = self.wells[0].location[2]
+        self.gotoXY.emit(x,y, True)
+        self.gotoZ.emit(z, True)        
         self.wait_signal(self.rPositionReached, 10000)
         
-        # Let the user set the z-location manually by moving to first well and open dialog
-        dialog = FocusDialog()
+        # Let the user set the x,y,z-location manually by moving to first well and open dialog
+        dialog = ManualPositioningDialog(x,y,z)
+        dialog.stageXTranslation.valueChanged.connect(lambda x: self.gotoX.emit(x, True))
+        dialog.stageYTranslation.valueChanged.connect(lambda y: self.gotoY.emit(y, True))
         dialog.stageZTranslation.valueChanged.connect(lambda z: self.gotoZ.emit(z))
         dialog.light.valueChanged.connect(lambda x: self.setLightPWM.emit(x/100))
         dialog.exec_()
-        z = dialog.stageZTranslation.value()
-        z = round(z,3)
+        self.A1_to_side_offset = round(dialog.stageXTranslation.value(), 3)
+        self.A1_to_top_offset = round(dialog.stageYTranslation.value(), 3)
+        z = round(dialog.stageZTranslation.value(), 3)
         self.lightLevel = round(dialog.light.value()/100,3)
+        self.msg("info;user set well A1 at (x,y)=({:.3f},{:.3f})".format(self.A1_to_side_offset, self.A1_to_top_offset))
         self.msg("info;user set focus at z={:.3f}".format(z))
         self.msg("info;user set light intensity at {:.3f}".format(self.lightLevel))
+
+        # recompute the well locations in our batch
+        self.computeWellLocations()
+        
         for well in self.wells:
             well.location[2] = z # copy z, later on we may do autofocus per well
-            
-        # go back home and find the diaphragm
-        self.msg("info;goto home")
-        self.gotoZ.emit(z)
-        self.gotoXY.emit(0,0,False) # goto to system origin
-        self.wait_signal(self.rPositionReached, 10000)
-        self.msg("info;find diaphragm")
-        self.findDiaphragm.emit()
-        self.wait_signal(self.rDiaphragmFound, 10000)
-        
+            print(well.position, well.location)
+
         # start timer
         self.start_time_s = time.time()
-        self.adaptXY = True # Flag XY position update after initial adaption
         self.timer.start(0)
         
             
@@ -249,42 +314,11 @@ class BatchProcessor(QObject):
             self.wait_signal(self.rPositionReached, 10000)
             self.wait_ms(1000)
             
-            # adapt from initial guess to actual well position
-            if self.adaptXY:
-                for i in range(0,10):
-                    if self.isInterruptionRequested:                
-                        return                
-
-                    self.findWell.emit()
-                    self.wait_signal(self.rWellFound, 10000)
-                    # wellFound
-                    if self.foundWellLocation is not None and self.foundDiaphragmLocation is not None: 
-                        locationError = sqrt( (self.foundWellLocation[0] - self.foundDiaphragmLocation[0])**2 + (self.foundWellLocation[1] - self.foundDiaphragmLocation[1])**2 )
-                        self.msg("info;location error = {:.3f} mm".format(locationError/self.resolution))
-                        # check convergence criterion 
-                        if locationError/self.resolution < self.accepted_location_error_mm:
-                            # save last location
-                            well.location[0] = round(x,3)
-                            well.location[1] = round(y,3)
-                            break
-                        else:
-                        # adapt planar position a bit
-                            x -= (self.foundWellLocation[0] - self.foundDiaphragmLocation[0])/(self.resolution)
-                            y -= (self.foundWellLocation[1] - self.foundDiaphragmLocation[1])/(self.resolution)
-                            self.gotoXY.emit(x,y,True)
-                            self.wait_signal(self.rPositionReached, 10000) # mostly, signal returns before event loop in wait_signal is even started
-
-                    else:
-                        self.msg("error;cannot find well {:s} at ({:.3f}, {:.3f})".format(well.name, x,y))
-                        return
-            self.msg("info;well {:s} at ({:.3f}, {:.3f})".format(well.name, x,y))
-            
             # TODO: adapt focus
             self.computeSharpnessScore.emit()
             self.wait_signal(self.rSharpnessScore, 10000)
 ##            well.sharpnessScore = self.rSharpnessScore
-            well.sharpnessScore = round(self.sharpnessScore,3)
-            
+            well.sharpnessScore = round(self.sharpnessScore,3)            
             
             prefix = os.path.sep.join([self.storage_path, well.name, str(well.position) + "_" + str(well.location) + "_" + str(well.sharpnessScore)])
             if self.snapshot:
@@ -293,10 +327,6 @@ class BatchProcessor(QObject):
             if self.videoclip and self.videoclip_length > 0:
                 self.recordClip.emit(prefix, self.videoclip_length)
                 self.wait_signal(self.rClipRecorded) # clip recorded
-                
-        
-        # TODO: make the behavior more clear and robust
-        self.adaptXY = False # this is a lame workaround to let the adaptation occur only once,                 
                 
         # Wrapup current round of acquisition     
         self.setLightPWM.emit(0.00)
@@ -309,6 +339,14 @@ class BatchProcessor(QObject):
         progress_percentage = int(100*elapsed_total_time_s/self.run_duration_s)
         self.signals.progress.emit(progress_percentage)
         self.msg("info;progress={:d}%".format(progress_percentage))
+
+        # send a notification
+        if int(progress_percentage/10) % 3:
+            # when progress is 30, 60, 90%
+            port = 465  # For SSL
+            context = ssl.create_default_context()  # Create a secure SSL context
+
+                
         
         # check if we still have time to do another round
         if elapsed_total_time_s + self.run_wait_s < self.run_duration_s:

@@ -30,12 +30,6 @@ class MainWindow(QMainWindow):
 
     def __init__(self, *args, **kwargs):
         super(MainWindow, self).__init__(*args, **kwargs)
-
-#     def __init__(self):
-#         super(MainWindow, self).__init__()
-# 
-#     def __init__(self):
-#         super().__init__()
         
         self.central_widget = QWidget()               # define central widget
         self.setCentralWidget(self.central_widget)    # set QMainWindow.centralWidget
