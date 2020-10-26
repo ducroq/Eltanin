@@ -194,8 +194,9 @@ class BatchProcessor(QObject):
         self.nr_of_columns = int(self.batch_settings.value('plate/nr_of_columns'))
         self.nr_of_rows = int(self.batch_settings.value('plate/nr_of_rows'))
         self.A1_to_side_offset = float(self.batch_settings.value('plate/A1_to_side_offset'))
-        self.well_spacing = float(self.batch_settings.value('plate/well_spacing'))
+        self.column_well_spacing = float(self.batch_settings.value('plate/column_well_spacing'))
         self.A1_to_top_offset = float(self.batch_settings.value('plate/A1_to_top_offset'))
+        self.row_well_spacing = float(self.batch_settings.value('plate/row_well_spacing'))
 
         self.computeWellLocations()
 
@@ -211,11 +212,11 @@ class BatchProcessor(QObject):
             r = re.split('(\d+)', well_id)
             row = ord(r[0].lower()) - 96
             col = int(r[1])
-            location_mm = [round(self.A1_to_side_offset + (col-1)*self.well_spacing, 2), \
-                           round(self.A1_to_top_offset  + (row-1)*self.well_spacing, 2), \
+            location_mm = [round(self.A1_to_side_offset + (col-1)*self.column_well_spacing, 2), \
+                           round(self.A1_to_top_offset  + (row-1)*self.row_well_spacing, 2), \
                            0]
             self.wells.append(Well(name=well_id, position=[row, col], location=location_mm))
-        self.batch_settings.endArray() # close array
+        self.batch_settings.endArray() # close array, also required when opening!
 
 
     def msg(self, text):
@@ -249,8 +250,8 @@ class BatchProcessor(QObject):
         # copy batch definition file to storage folder
         os.system('cp {:s} {:s}'.format(self.batch_file_name, self.storage_path))
 
-        log_file_name = os.path.sep.join([self.storage_path, self.run_id + ".log"])
-        self.setLogFileName.emit(log_file_name)
+        note_file_name = os.path.sep.join([self.storage_path, self.run_id + ".log"])
+        self.setLogFileName.emit(note_file_name)
 
         # start-up recipe
         self.msg("info;plate note: {:s}".format(self.plate_note))
@@ -258,14 +259,15 @@ class BatchProcessor(QObject):
         self.msg("info;{:d} wells found in {:s}".format(len(self.wells),self.batch_settings.fileName()))
         self.msg("info;{:s} run during {:d}s with {:d}s interleave".format(self.run_id, self.run_duration_s, self.run_wait_s))
 
-        self.setLightPWM.emit(0)
+        self.setLightPWM.emit(0.2)
         self.startCamera.emit()
         self.msg("info;goto first well")
         x = self.wells[0].location[0]
         y = self.wells[0].location[1]
-        z = self.wells[0].location[2]
+        z = 33 #self.wells[0].location[2]
         self.gotoXY.emit(x,y, True)
-        self.gotoZ.emit(z, True)        
+        self.wait_signal(self.rPositionReached, 10000)
+        self.gotoZ.emit(z)
         self.wait_signal(self.rPositionReached, 10000)
         
         # Let the user set the x,y,z-location manually by moving to first well and open dialog
@@ -288,9 +290,9 @@ class BatchProcessor(QObject):
         
         for well in self.wells:
             well.location[2] = z # copy z, later on we may do autofocus per well
-            print(well.position, well.location)
 
         # start timer
+        self.prev_note_nr = 0 # for logging
         self.start_time_s = time.time()
         self.timer.start(0)
         
@@ -317,7 +319,6 @@ class BatchProcessor(QObject):
             # TODO: adapt focus
             self.computeSharpnessScore.emit()
             self.wait_signal(self.rSharpnessScore, 10000)
-##            well.sharpnessScore = self.rSharpnessScore
             well.sharpnessScore = round(self.sharpnessScore,3)            
             
             prefix = os.path.sep.join([self.storage_path, well.name, str(well.position) + "_" + str(well.location) + "_" + str(well.sharpnessScore)])
@@ -341,11 +342,22 @@ class BatchProcessor(QObject):
         self.msg("info;progress={:d}%".format(progress_percentage))
 
         # send a notification
-        if int(progress_percentage/10) % 3:
-            # when progress is 30, 60, 90%
+        note_nr = int(progress_percentage/10)
+        if note_nr != self.prev_note_nr:
+            self.prev_note_nr = note_nr            
+            mail_settings = QSettings("mail.ini", QSettings.IniFormat)        
             port = 465  # For SSL
             context = ssl.create_default_context()  # Create a secure SSL context
+            with smtplib.SMTP_SSL("smtp.gmail.com", port, context=context) as server:
+                login = mail_settings.value('smtp/login')
+                password = mail_settings.value('smtp/password')
+                server.login(login, password)
 
+                message = """Subject: Progress = {}% \n\n Still {} s left""".format(progress_percentage, int(self.run_duration_s - elapsed_total_time_s))
+                # do something fancy here in future: https://realpython.com/python-send-email/#sending-fancy-emails
+                server.sendmail(mail_settings.value('smtp/login'), \
+                                mail_settings.value('receiver/email'), \
+                                message)
                 
         
         # check if we still have time to do another round
