@@ -187,7 +187,6 @@ class BatchProcessor(QObject):
         s = str(self.batch_settings.value('run/videoclip'))
         self.videoclip = s.lower() in ['true', '1', 't', 'y', 'yes']
         self.videoclip_length = int(self.batch_settings.value('run/clip_length'))
-        self.accepted_location_error_mm = float(self.batch_settings.value('run/accepted_location_error_mm'))
         
         # load well-plate dimensions and compute well locations
         self.plate_note = self.batch_settings.value('plate/note')

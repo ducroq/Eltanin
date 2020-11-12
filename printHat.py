@@ -11,7 +11,7 @@ import traceback
 from math import sqrt
 from PyQt5.QtWidgets import QMessageBox
 from objectSignals import ObjectSignals
-from PyQt5.QtCore import QSettings, QThread, QTimer, QEventLoop, pyqtSignal, pyqtSlot
+from PyQt5.QtCore import QSettings, QThread, QMutex, QTimer, QEventLoop, pyqtSignal, pyqtSlot
 
    
 class PrintHat(QThread):
@@ -19,6 +19,7 @@ class PrintHat(QThread):
     confirmed = pyqtSignal() # internal signal
     homed = pyqtSignal()
     positionReached = pyqtSignal()
+    mutex = QMutex()
                        
     sio = None
     eps = 1e-3
@@ -104,7 +105,7 @@ class PrintHat(QThread):
         self.wait_signal(self.confirmed, 1000)
         self.requestInterruption()
         self.wait_signal(self.signals.finished, 10000)
-        self.wait_ms(500) # soe signals may need to settle
+        self.wait_ms(500) # some signals may need to settle
         self.sio = None
         self.disconnectKlipper()
         self.quit()
@@ -122,6 +123,8 @@ class PrintHat(QThread):
     # @param port is the port to be connected to. 
     def connectKlipper(self, port):
         try:
+            self.mutex.tryLock(1000)
+            
             self.msg("info;starting klipper service")            
             # make sure klipper service is active
             os.system('sudo service klipper restart && sudo service klipper status | more')
@@ -135,6 +138,8 @@ class PrintHat(QThread):
                 self.is_paused = False
             else:
                 self.msg("error;cannot connect to printHat via serial port {}".format(self.port))
+                
+            self.mutex.unlock()
                     
         except Exception as err:
             traceback.print_exc()
@@ -143,9 +148,13 @@ class PrintHat(QThread):
     
     def disconnectKlipper(self):
         try:
+            self.mutex.tryLock(1000)
+            
             ## Stop klipper service and show its status
             self.msg("info;stopping klipper service")
             os.system('sudo service klipper stop && sudo service klipper status | more')
+            
+            self.mutex.unlock()
         except Exception as err:
             traceback.print_exc()
             self.signals.error.emit((type(err), err.args, traceback.format_exc()))            
@@ -162,7 +171,7 @@ class PrintHat(QThread):
         
 
     def wait_signal(self, signal, timeout=1000):
-        ''' Block loop until signal emitted, or timeout (ms) elapses.
+        ''' Block loop until signal received, or until timeout (ms) elapsed.
         '''
         loop = QEventLoop()
         signal.connect(loop.quit) # only quit is a slot of QEventLoop
@@ -178,6 +187,9 @@ class PrintHat(QThread):
                 self.sio.write(gcode_string + "\r\n")
                 self.sio.flush() # it is buffering. required to get the data out *now*
                 self.msg("info;" + self.sendGcode.__name__ + " " + gcode_string)
+                
+                self.wait_signal(self.confirmed, 10000)
+                
             except Exception as err:
                 traceback.print_exc()
                 self.signals.error.emit((type(err), err.args, traceback.format_exc()))            
@@ -236,7 +248,6 @@ class PrintHat(QThread):
         self.msg("info;stop the idle and hold on all axes")
         self.sendGcode("M84")
         self.sendGcode("M18")
-        
 
     @pyqtSlot()
     def homeXYZ(self):
@@ -244,14 +255,12 @@ class PrintHat(QThread):
             self.msg("info;homeXY called")
             self.position_x = self.position_y = self.position_z = None
             self.sendGcode("G28 X Y Z")
-            self.wait_signal(self.confirmed, 60000)
+            self.wait_ms(10000)
             # wait until we have really reached home, this can take a while
             for i in range(0,10): # limit the number of tries
-##                if self.isFinished():
-##                    break
                 self.getPosition()
                 if self.position_x is None or self.position_y is None or self.position_z is None:
-                    self.wait_ms(500) # homing is slow, so wait a bit
+                    self.wait_ms(1000) # homing is slow, so wait a bit
                 elif abs(self.position_x) < self.eps and abs(self.position_y) < self.eps and abs(self.position_z) < self.eps:
                     self.msg("info;homeXY confirmed")
                     self.is_homed = True
@@ -262,60 +271,53 @@ class PrintHat(QThread):
         else:
             self.msg("error;printhat not ready")
             
-            
     @pyqtSlot()
     def getPosition(self):
         self.sendGcode("M400") # Wait for current moves to finish
-        self.wait_signal(self.confirmed, 10000)
         self.sendGcode("M114")        
-        self.wait_signal(self.confirmed, 10000)
         if self.position_x is not None and self.position_y is not None and self.position_z is not None:
             self.msg("info;current position = ({:.3f}, {:.3f}, {:.3f})".format(self.position_x, self.position_y, self.position_z))
         else:
-            self.msg("error;current position unknown")      
-
+            self.msg("error;current position unknown")
 
     @pyqtSlot(float, float, float)
     def gotoXYZ(self, x=None, y=None, z=None):
-        gcode_string = "G1"
-        gcode_string += " X{:.3f}".format(x) if x is not None else ""
-        gcode_string += " Y{:.3f}".format(y) if y is not None else ""
-        gcode_string += " Z{:.3f}".format(z) if z is not None else ""
-        self.sendGcode(gcode_string)
-        self.wait_signal(self.confirmed, 10000)
         
-        # if printhat returns error, initiate homing, and resend G-code
-        if not self.is_homed:
-            self.homeXYZ()
+        if self.mutex.tryLock(100):
+            gcode_string = "G1"
+            gcode_string += " X{:.3f}".format(x) if x is not None else ""
+            gcode_string += " Y{:.3f}".format(y) if y is not None else ""
+            gcode_string += " Z{:.3f}".format(z) if z is not None else ""
             self.sendGcode(gcode_string)
-            self.wait_signal(self.confirmed, 10000)
-
-        # wait until we have really reached the desired location
-## for some reason the slot can be re-invoked when this loop has not finished,
-##        causing a mismatch between the function parameters and the actual positions
-        
-        prev_x, prev_y, prev_z = 0,0,0
-        for i in range(0,10): # limit the number of tries
-##            if self.isFinished():
-##                break
-            self.wait_ms(10)
-            self.getPosition()
-            if self.position_x is not None and self.position_y is not None and self.position_z is not None:
-                error = 0
-                error += (self.position_x-x)**2 if x is not None else 0
-                error += (self.position_y-y)**2 if y is not None else 0
-                error += (self.position_z-z)**2 if z is not None else 0
-                if sqrt(error) < self.eps \
-                   or ( abs(self.position_x-prev_x) < self.eps and \
-                        abs(self.position_y-prev_y) < self.eps and \
-                        abs(self.position_z-prev_z) < self.eps ):
-                    self.msg("info;gotoXYZ confirmed")
-                    self.positionReached.emit()
-                    break
-                else:
-                    prev_x, prev_y, prev_z = self.position_x, self.position_y, self.position_z
-
-
+            
+            # if printhat returns error, initiate homing, and resend G-code
+            if not self.is_homed:
+                self.homeXYZ()
+                self.sendGcode(gcode_string)
+            
+            # wait until we have really reached the desired location
+            prev_x, prev_y, prev_z = 0,0,0
+            for i in range(0,10): # limit the number of tries
+                self.wait_ms(10)
+                self.getPosition()
+                if self.position_x is not None and self.position_y is not None and self.position_z is not None:
+                    error = 0
+                    error += (self.position_x-x)**2 if x is not None else 0
+                    error += (self.position_y-y)**2 if y is not None else 0
+                    error += (self.position_z-z)**2 if z is not None else 0
+                    if sqrt(error) < self.eps \
+                       or ( abs(self.position_x-prev_x) < self.eps and \
+                            abs(self.position_y-prev_y) < self.eps and \
+                            abs(self.position_z-prev_z) < self.eps ):
+                        self.msg("info;gotoXYZ confirmed")
+                        self.positionReached.emit()
+                        break
+                    else:
+                        prev_x, prev_y, prev_z = self.position_x, self.position_y, self.position_z
+            
+            self.mutex.unlock()
+        else:
+            self.msg("error;mutex lock failed")
             
     @pyqtSlot(float, float, bool)
     def gotoXY(self, x, y, relative=True):
