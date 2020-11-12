@@ -10,6 +10,7 @@ import time
 import traceback
 import numpy as np
 import smtplib, ssl
+from webdav3.client import Client
 from math import sqrt
 from PyQt5.QtCore import QSettings, QObject, QTimer, QEventLoop, pyqtSignal, pyqtSlot
 from PyQt5.QtWidgets import QDialog, QFileDialog, QPushButton, QLabel, QSpinBox, QDoubleSpinBox, QVBoxLayout, QGridLayout
@@ -244,13 +245,29 @@ class BatchProcessor(QObject):
         # update storage path
         self.storage_path = os.path.sep.join([self.storage_path, self.run_id])
         if not os.path.exists(self.storage_path):
-            os.makedirs(self.storage_path)        
+            os.makedirs(self.storage_path)
         
         # copy batch definition file to storage folder
         os.system('cp {:s} {:s}'.format(self.batch_file_name, self.storage_path))
 
         note_file_name = os.path.sep.join([self.storage_path, self.run_id + ".log"])
         self.setLogFileName.emit(note_file_name)
+        
+        # copy files to webdav host
+        conn_settings = QSettings("connections.ini", QSettings.IniFormat)
+        self.webdav_path = os.path.sep.join([conn_settings.value('webdav/storage_path'), self.run_id])
+        
+        options = {'webdav_hostname': conn_settings.value('webdav/hostname'),
+                   'webdav_login': conn_settings.value('webdav/login'),
+                   'webdav_password': conn_settings.value('webdav/password')
+                   }
+        try:
+            self.webdav_client = Client(options)
+            self.webdav_client.mkdir(self.webdav_path)
+            self.webdav_client.push(remote_directory=self.webdav_path, local_directory=self.storage_path)
+        except WebDavException as err:
+            traceback.print_exc()
+            self.signals.error.emit((type(err), err.args, traceback.format_exc()))        
 
         # start-up recipe
         self.msg("info;plate note: {:s}".format(self.plate_note))
@@ -318,15 +335,26 @@ class BatchProcessor(QObject):
             # TODO: adapt focus
             self.computeSharpnessScore.emit()
             self.wait_signal(self.rSharpnessScore, 10000)
-            well.sharpnessScore = round(self.sharpnessScore,3)            
+            well.sharpnessScore = round(self.sharpnessScore,3)
             
+            # take snapshot or video            
             prefix = os.path.sep.join([self.storage_path, well.name, str(well.position) + "_" + str(well.location) + "_" + str(well.sharpnessScore)])
             if self.snapshot:
                 self.takeSnapshot.emit(prefix)
                 self.wait_signal(self.rSnapshotTaken) # snapshot taken
+                
             if self.videoclip and self.videoclip_length > 0:
                 self.recordClip.emit(prefix, self.videoclip_length)
                 self.wait_signal(self.rClipRecorded) # clip recorded
+                
+            try:
+                remote_path = os.path.sep.join([self.webdav_path,well.name])
+                self.webdav_client.mkdir(remote_path)
+                local_path = os.path.sep.join([self.storage_path,well.name])
+                self.webdav_client.push(remote_directory=remote_path, local_directory=local_path)
+            except WebDavException as err:
+                traceback.print_exc()
+                self.signals.error.emit((type(err), err.args, traceback.format_exc()))                 
                 
         # Wrapup current round of acquisition     
         self.setLightPWM.emit(0.00)
@@ -366,15 +394,15 @@ class BatchProcessor(QObject):
                 self.signals.finished.emit()
                 
     def sendNotification(self, message):
-        mail_settings = QSettings("mail.ini", QSettings.IniFormat)
+        conn_settings = QSettings("connections.ini", QSettings.IniFormat)
         port = 465  # For SSL
         context = ssl.create_default_context()  # Create a secure SSL context
         with smtplib.SMTP_SSL("smtp.gmail.com", port, context=context) as server:
-            login = mail_settings.value('smtp/login')
-            password = mail_settings.value('smtp/password')
+            login = conn_settings.value('smtp/login')
+            password = conn_settings.value('smtp/password')
             server.login(login, password)
-            server.sendmail(mail_settings.value('smtp/login'), \
-                            mail_settings.value('receiver/email'), \
+            server.sendmail(conn_settings.value('smtp/login'), \
+                            conn_settings.value('subscriber/email'), \
                             message)
 
     def requestInterruption(self):
