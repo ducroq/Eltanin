@@ -343,20 +343,11 @@ class BatchProcessor(QObject):
         # send a notification
         note_nr = int(progress_percentage/10)
         if note_nr != self.prev_note_nr:
-            self.prev_note_nr = note_nr            
-            mail_settings = QSettings("mail.ini", QSettings.IniFormat)        
-            port = 465  # For SSL
-            context = ssl.create_default_context()  # Create a secure SSL context
-            with smtplib.SMTP_SSL("smtp.gmail.com", port, context=context) as server:
-                login = mail_settings.value('smtp/login')
-                password = mail_settings.value('smtp/password')
-                server.login(login, password)
-
-                message = """Subject: Progress = {}% \n\n Still {} s left""".format(progress_percentage, int(self.run_duration_s - elapsed_total_time_s))
-                # do something fancy here in future: https://realpython.com/python-send-email/#sending-fancy-emails
-                server.sendmail(mail_settings.value('smtp/login'), \
-                                mail_settings.value('receiver/email'), \
-                                message)
+            self.prev_note_nr = note_nr
+            
+            message = """Subject: Progress = {}% \n\n Still {} s left""".format(progress_percentage, int(self.run_duration_s - elapsed_total_time_s))
+            # do something fancy here in future: https://realpython.com/python-send-email/#sending-fancy-emails
+            self.sendNotification(message)           
                 
         
         # check if we still have time to do another round
@@ -367,10 +358,24 @@ class BatchProcessor(QObject):
             self.timer.stop()
             self.signals.ready.emit()
             self.msg("info;run finalized")
+            message = """Subject: run finalized"""
+            # do something fancy here in future: https://realpython.com/python-send-email/#sending-fancy-emails
+            self.sendNotification(message)            
             if self.shutdown:
                 self.msg("info;emitting finished")
                 self.signals.finished.emit()
-       
+                
+    def sendNotification(self, message):
+        mail_settings = QSettings("mail.ini", QSettings.IniFormat)
+        port = 465  # For SSL
+        context = ssl.create_default_context()  # Create a secure SSL context
+        with smtplib.SMTP_SSL("smtp.gmail.com", port, context=context) as server:
+            login = mail_settings.value('smtp/login')
+            password = mail_settings.value('smtp/password')
+            server.login(login, password)
+            server.sendmail(mail_settings.value('smtp/login'), \
+                            mail_settings.value('receiver/email'), \
+                            message)
 
     def requestInterruption(self):
         self.isInterruptionRequested = True                    
