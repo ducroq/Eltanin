@@ -1,0 +1,17 @@
+
+1. make a subfolder: 'tmp'
+2. sudo nano /etc/fstab
+3. and add the line
+    tmpfs /home/pi/Eltanin/tmp tmpfs nodev,nosuid,size=10M 0 0 
+4. save and close the file. Now issue
+    sudo mount -a
+5. to check if your operation succeeded issue
+    df
+6. Now write temporary files to /home/pi/Eltanin/tmp
+
+
+The ramdrive is set at only 10M in size, should be sufficient for PNGs, but not for movies!
+Remember that, as is generally the case with RAM drives, data on the drive is lost after a reboot. 
+
+
+

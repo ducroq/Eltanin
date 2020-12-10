@@ -11,6 +11,7 @@ import traceback
 import numpy as np
 import smtplib, ssl
 from webdav3.client import Client
+from webdav3.exceptions import WebDavException
 from math import sqrt
 from PyQt5.QtCore import QSettings, QObject, QTimer, QEventLoop, pyqtSignal, pyqtSlot
 from PyQt5.QtWidgets import QDialog, QFileDialog, QPushButton, QLabel, QSpinBox, QDoubleSpinBox, QVBoxLayout, QGridLayout
@@ -229,10 +230,14 @@ class BatchProcessor(QObject):
     @pyqtSlot()
     def start(self):        
         # open storage folder
-        dlg = QFileDialog()
-        self.storage_path = QFileDialog.getExistingDirectory(dlg, 'Open storage folder', '/media/pi/', QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks)
-        if self.storage_path == "" or self.storage_path is None:
-            return
+        # dlg = QFileDialog()
+        # self.storage_path = QFileDialog.getExistingDirectory(dlg, 'Open storage folder', '/media/pi/', QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks)
+        # if self.storage_path == "" or self.storage_path is None:
+        #     return
+        self.storage_path = os.getcwd() + '/tmp'
+
+        # clear temporary storage path
+        os.system('rm {:s}'.format(os.path.sep.join([self.storage_path, "*.*"])))
 
         # open batch definition file
         dlg = QFileDialog()
@@ -242,11 +247,6 @@ class BatchProcessor(QObject):
         self.batch_settings = QSettings(self.batch_file_name, QSettings.IniFormat)
         self.loadBatchSettings()
 
-        # update storage path
-        self.storage_path = os.path.sep.join([self.storage_path, self.run_id])
-        if not os.path.exists(self.storage_path):
-            os.makedirs(self.storage_path)
-        
         # copy batch definition file to storage folder
         os.system('cp {:s} {:s}'.format(self.batch_file_name, self.storage_path))
 
@@ -269,6 +269,11 @@ class BatchProcessor(QObject):
             traceback.print_exc()
             self.signals.error.emit((type(err), err.args, traceback.format_exc()))        
 
+        # create temporary image storage path
+        self.image_storage_path = os.path.sep.join([self.storage_path,'img'])
+        if not os.path.exists(self.image_storage_path):
+            os.makedirs(self.image_storage_path)
+        
         # start-up recipe
         self.msg("info;plate note: {:s}".format(self.plate_note))
         self.msg("info;run note: {:s}".format(self.run_note))
@@ -332,26 +337,38 @@ class BatchProcessor(QObject):
             self.wait_signal(self.rPositionReached, 10000)
             self.wait_ms(1000)
             
-            # TODO: adapt focus
+#             for i in range(-5,5):
+#                 cur_z = z + float(i)/2.0
+#                 self.gotoZ.emit(cur_z)
+#                 self.wait_signal(self.rPositionReached, 10000)
+#                 location = well.location
+#                 location[2] = cur_z            
+            
             self.computeSharpnessScore.emit()
             self.wait_signal(self.rSharpnessScore, 10000)
             well.sharpnessScore = round(self.sharpnessScore,3)
             
+            # clear temporary storage path
+            os.system('rm {:s}'.format(os.path.sep.join([self.image_storage_path, "*.*"])))
+        
             # take snapshot or video            
-            prefix = os.path.sep.join([self.storage_path, well.name, str(well.position) + "_" + str(well.location) + "_" + str(well.sharpnessScore)])
+            # prefix = os.path.sep.join([self.storage_path, well.name, str(well.position) + "_" + str(well.location) + "_" + str(well.sharpnessScore)])
+            prefix = os.path.sep.join([self.image_storage_path, str(well.position) + "_" + str(well.location) + "_" + str(well.sharpnessScore)])
+            
             if self.snapshot:
                 self.takeSnapshot.emit(prefix)
                 self.wait_signal(self.rSnapshotTaken) # snapshot taken
-                
             if self.videoclip and self.videoclip_length > 0:
                 self.recordClip.emit(prefix, self.videoclip_length)
                 self.wait_signal(self.rClipRecorded) # clip recorded
                 
             try:
+                # push image
                 remote_path = os.path.sep.join([self.webdav_path,well.name])
                 self.webdav_client.mkdir(remote_path)
-                local_path = os.path.sep.join([self.storage_path,well.name])
-                self.webdav_client.push(remote_directory=remote_path, local_directory=local_path)
+                self.webdav_client.push(remote_directory=remote_path, local_directory=self.image_storage_path)
+                # push log file
+                self.webdav_client.push(remote_directory=self.webdav_path, local_directory=self.storage_path)
             except WebDavException as err:
                 traceback.print_exc()
                 self.signals.error.emit((type(err), err.args, traceback.format_exc()))                 

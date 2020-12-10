@@ -255,12 +255,12 @@ class PrintHat(QThread):
             self.msg("info;homeXY called")
             self.position_x = self.position_y = self.position_z = None
             self.sendGcode("G28 X Y Z")
-            self.wait_ms(10000)
             # wait until we have really reached home, this can take a while
             for i in range(0,10): # limit the number of tries
+                self.wait_ms(10000)
                 self.getPosition()
                 if self.position_x is None or self.position_y is None or self.position_z is None:
-                    self.wait_ms(1000) # homing is slow, so wait a bit
+                    self.wait_ms(1000) # homing is slow, so wait a bit more
                 elif abs(self.position_x) < self.eps and abs(self.position_y) < self.eps and abs(self.position_z) < self.eps:
                     self.msg("info;homeXY confirmed")
                     self.is_homed = True
