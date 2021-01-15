@@ -256,7 +256,7 @@ class PrintHat(QThread):
             self.position_x = self.position_y = self.position_z = None
             self.sendGcode("G28 X Y Z")
             # wait until we have really reached home, this can take a while
-            for i in range(0,10): # limit the number of tries
+            for i in range(0,20): # limit the number of tries
                 self.wait_ms(10000)
                 self.getPosition()
                 if self.position_x is None or self.position_y is None or self.position_z is None:

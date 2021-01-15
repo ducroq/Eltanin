@@ -9,7 +9,7 @@ import re
 import time
 import traceback
 import numpy as np
-import smtplib, ssl
+import smtplib, ss
 from webdav3.client import Client
 from webdav3.exceptions import WebDavException
 from math import sqrt
@@ -139,9 +139,9 @@ class BatchProcessor(QObject):
     findDiaphragm = pyqtSignal()
     disableMotors = pyqtSignal()
     findWell = pyqtSignal()
-    computeSharpnessScore = pyqtSignal()
+#     computeSharpnessScore = pyqtSignal()
     rSnapshotTaken = pyqtSignal() # repeater signal
-    rSharpnessScore = pyqtSignal() # repeater signal
+#     rSharpnessScore = pyqtSignal() # repeater signal
     rWellFound = pyqtSignal() # repeat signal
     rDiaphragmFound = pyqtSignal() # repeat signal
     rClipRecorded = pyqtSignal() # repeat signal
@@ -151,8 +151,10 @@ class BatchProcessor(QObject):
     setLogFileName = pyqtSignal(str)
     stopCamera = pyqtSignal()
     startCamera = pyqtSignal()
+    startAutoFocus = pyqtSignal()
+    focussed = pyqtSignal() # repeater signal    
 
-    def __init__(self, batch_file_name):
+    def __init__(self):
         super().__init__()
 
         self.settings = QSettings("settings.ini", QSettings.IniFormat)        
@@ -163,7 +165,7 @@ class BatchProcessor(QObject):
         self.foundDiaphragmLocation = None
         self.foundWellLocation = None
         self.lightLevel = 1.0 # initial value, will be set later by user
-        self.sharpnessScore = 0
+#         self.sharpnessScore = 0
 
 
     def loadSettings(self):
@@ -234,7 +236,7 @@ class BatchProcessor(QObject):
         # self.storage_path = QFileDialog.getExistingDirectory(dlg, 'Open storage folder', '/media/pi/', QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks)
         # if self.storage_path == "" or self.storage_path is None:
         #     return
-        self.storage_path = os.getcwd() + '/tmp'
+        self.storage_path = os.path.sep.join([os.getcwd(), self.settings.value('temp_folder')])
 
         # clear temporary storage path
         os.system('rm {:s}'.format(os.path.sep.join([self.storage_path, "*.*"])))
@@ -257,12 +259,12 @@ class BatchProcessor(QObject):
         conn_settings = QSettings("connections.ini", QSettings.IniFormat)
         self.webdav_path = os.path.sep.join([conn_settings.value('webdav/storage_path'), self.run_id])
         
-        options = {'webdav_hostname': conn_settings.value('webdav/hostname'),
-                   'webdav_login': conn_settings.value('webdav/login'),
-                   'webdav_password': conn_settings.value('webdav/password')
-                   }
+        self.webdav_options = {'webdav_hostname': conn_settings.value('webdav/hostname'),
+                               'webdav_login': conn_settings.value('webdav/login'),
+                               'webdav_password': conn_settings.value('webdav/password')
+                               }
         try:
-            self.webdav_client = Client(options)
+            self.webdav_client = Client(self.webdav_options)
             self.webdav_client.mkdir(self.webdav_path)
             self.webdav_client.push(remote_directory=self.webdav_path, local_directory=self.storage_path)
         except WebDavException as err:
@@ -322,11 +324,17 @@ class BatchProcessor(QObject):
         ''' Timer call back function, als initiates next one-shot 
         '''
         start_run_time_s = time.time()
+        self.setLightPWM.emit(self.lightLevel)
         self.startCamera.emit()
+        self.msg("info;goto first well")
+        x = self.wells[0].location[0]
+        y = self.wells[0].location[1]
+        self.gotoXY.emit(x,y, True)
+        self.wait_signal(self.rPositionReached, 10000)
+        
         for well in self.wells:
             x, y, z = tuple(well.location)
             self.msg("info;gauging well {:s} at ({:.3f}, {:.3f}, {:.3f})".format(well.name, x,y,z))
-            self.setLightPWM.emit(self.lightLevel)
 
             # split goto xyz command 
             self.gotoX.emit(x,True)
@@ -335,25 +343,30 @@ class BatchProcessor(QObject):
             self.wait_signal(self.rPositionReached, 10000)
             self.gotoZ.emit(z)
             self.wait_signal(self.rPositionReached, 10000)
-            self.wait_ms(1000)
             
-#             for i in range(-5,5):
-#                 cur_z = z + float(i)/2.0
-#                 self.gotoZ.emit(cur_z)
-#                 self.wait_signal(self.rPositionReached, 10000)
-#                 location = well.location
-#                 location[2] = cur_z            
-            
-            self.computeSharpnessScore.emit()
-            self.wait_signal(self.rSharpnessScore, 10000)
-            well.sharpnessScore = round(self.sharpnessScore,3)
-            
-            # clear temporary storage path
-            os.system('rm {:s}'.format(os.path.sep.join([self.image_storage_path, "*.*"])))
+            # autofocus
+            if self.batch_settings.value('run/autofocus', False, type=bool):
+                self.new_z = 0
+                self.startAutoFocus.emit()
+                self.wait_signal(self.focussed, 100000)
+                if self.new_z != 0:
+                    well.location[2] = self.new_z
+                else:
+                    # focus failed, so return to initial z position
+                    self.gotoZ.emit(z)
+                    self.wait_signal(self.rPositionReached, 10000)
+                    
+            try:
+                # clear temporary storage path
+                os.system('rm {:s}'.format(os.path.sep.join([self.image_storage_path, "*.*"])))
+            except err:
+                traceback.print_exc()
+                self.signals.error.emit((type(err), err.args, traceback.format_exc()))            
         
-            # take snapshot or video            
+            # take snapshot or video
+            self.wait_ms(2000)
             # prefix = os.path.sep.join([self.storage_path, well.name, str(well.position) + "_" + str(well.location) + "_" + str(well.sharpnessScore)])
-            prefix = os.path.sep.join([self.image_storage_path, str(well.position) + "_" + str(well.location) + "_" + str(well.sharpnessScore)])
+            prefix = os.path.sep.join([self.image_storage_path, str(well.position) + "_" + str(well.location)])
             
             if self.snapshot:
                 self.takeSnapshot.emit(prefix)
@@ -365,6 +378,7 @@ class BatchProcessor(QObject):
             try:
                 # push image
                 remote_path = os.path.sep.join([self.webdav_path,well.name])
+                self.msg("info;pushing image to {}".format(remote_path))
                 self.webdav_client.mkdir(remote_path)
                 self.webdav_client.push(remote_directory=remote_path, local_directory=self.image_storage_path)
                 # push log file
@@ -414,13 +428,17 @@ class BatchProcessor(QObject):
         conn_settings = QSettings("connections.ini", QSettings.IniFormat)
         port = 465  # For SSL
         context = ssl.create_default_context()  # Create a secure SSL context
-        with smtplib.SMTP_SSL("smtp.gmail.com", port, context=context) as server:
-            login = conn_settings.value('smtp/login')
-            password = conn_settings.value('smtp/password')
-            server.login(login, password)
-            server.sendmail(conn_settings.value('smtp/login'), \
-                            conn_settings.value('subscriber/email'), \
-                            message)
+        try:
+            with smtplib.SMTP_SSL("smtp.gmail.com", port, context=context) as server:
+                login = conn_settings.value('smtp/login')
+                password = conn_settings.value('smtp/password')
+                server.login(login, password)
+                server.sendmail(conn_settings.value('smtp/login'), \
+                                conn_settings.value('subscriber/email'), \
+                                message)
+        except Exception as err:
+            traceback.print_exc()
+            self.signals.error.emit((type(err), err.args, traceback.format_exc()))
 
     def requestInterruption(self):
         self.isInterruptionRequested = True                    
@@ -437,11 +455,11 @@ class BatchProcessor(QObject):
         self.msg("info;wellFound signal received")
         self.rWellFound.emit()
 
-    @pyqtSlot(float)
-    def setSharpnessScore(self, score):
-        self.sharpnessScore = score
-        self.msg("info;sharpnessScore signal received")        
-        self.rSharpnessScore.emit()
+#     @pyqtSlot(float)
+#     def setSharpnessScore(self, score):
+#         self.sharpnessScore = score
+#         self.msg("info;sharpnessScore signal received")        
+#         self.rSharpnessScore.emit()
         
     @pyqtSlot()
     def snapshotTaken(self):
@@ -458,22 +476,25 @@ class BatchProcessor(QObject):
         self.msg("info;positionReached signal received")
         self.rPositionReached.emit()
         
+    @pyqtSlot(float)
+    def focussedSlot(self, val):
+        self.new_z = val
+        self.focussed.emit()        
+        
     @pyqtSlot()
     def stop(self):
         self.msg("info;stopping")
         self.requestInterruption()        
         if self.timer.isActive():
             self.timer.stop()
-        self.signals.finished.emit()
-       
+        self.signals.finished.emit()      
 
     def wait_ms(self, timeout):
         ''' Block loop until timeout (ms) elapses.
         '''        
         loop = QEventLoop()
         QTimer.singleShot(timeout, loop.exit)
-        loop.exec_()
-        
+        loop.exec_()        
 
     def wait_signal(self, signal, timeout=100):
         ''' Block loop until signal emitted, or timeout (ms) elapses.

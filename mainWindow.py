@@ -75,6 +75,7 @@ class MainWindow(QMainWindow):
         self.restartButton = QPushButton("Restart firmware")
         self.homeXYZButton = QPushButton("Home XYZ")
         self.snapshotButton = QPushButton("Snapshot")
+        self.autoFocusButton = QPushButton("AutoFocus")
         self.recordButton = QPushButton("Record")
         self.stageOriginButton = QPushButton("Stage Origin")
         self.runButton = QPushButton("Run")
@@ -123,10 +124,10 @@ class MainWindow(QMainWindow):
 
         widgetLayout.addItem(QSpacerItem(0, 0, QSizePolicy.Minimum,QSizePolicy.Expanding))  # variable space
         widgetLayout.addWidget(self.homeXYZButton,  index+1,0,alignment=Qt.AlignLeft)
-        widgetLayout.addWidget(self.stageOriginButton,index+1,1,alignment=Qt.AlignLeft)        
+        widgetLayout.addWidget(self.stageOriginButton,index+1,1,alignment=Qt.AlignLeft)
+        widgetLayout.addWidget(self.autoFocusButton, index+4,0,alignment=Qt.AlignLeft)
         widgetLayout.addWidget(self.snapshotButton, index+3,0,alignment=Qt.AlignLeft)
         widgetLayout.addWidget(self.recordButton,   index+3,1,alignment=Qt.AlignLeft)
-
         widgetLayout.addWidget(self.runButton,      index+5,0,alignment=Qt.AlignLeft)
         widgetLayout.addWidget(self.pbar,           index+5,1,alignment=Qt.AlignLeft)
         widgetLayout.addWidget(self.breakButton,    index+6,0,alignment=Qt.AlignLeft)
@@ -134,6 +135,8 @@ class MainWindow(QMainWindow):
 
         widgetLayout.addWidget(QLabel("Processing time [ms]: "),index+7,0,alignment=Qt.AlignLeft)
         widgetLayout.addWidget(self.timerLabel,index+7,1,alignment=Qt.AlignLeft)
+        widgetLayout.addWidget(QLabel("Image quality [au]: "),index+8,0,alignment=Qt.AlignLeft)
+        widgetLayout.addWidget(self.imageQualityLabel,index+8,1,alignment=Qt.AlignLeft)
 ##        widgetLayout.addWidget(QLabel("Temperature [°C]: "),index+8,0,alignment=Qt.AlignLeft)
 ##        widgetLayout.addWidget(self.temperatureLabel,index+8,1,alignment=Qt.AlignLeft)
         
@@ -150,7 +153,9 @@ class MainWindow(QMainWindow):
         if val >= 0 and val <= 100:
             self.pbar.setValue(val)
         
-
+    @pyqtSlot(np.float)
+    def imageQualityUpdate(self, image_quality=None):
+        self.imageQualityLabel.setNum(round(image_quality,2))
 
     def progress_fn(self, n):
         print("%d%% done" % n)
@@ -165,6 +170,7 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot(np.ndarray)
     def update(self, image=None):
+        self.kickTimer() # Measure time delay
         if not(image is None):  # we have a new image
             height, width = image.shape[:2]  # get dimensions
             self.image = image if self.image_size[0] == width and self.image_size[1] == height else cv2.resize(image, self.image_size)
@@ -294,7 +300,7 @@ class MainWindow(QMainWindow):
 
     def loadSettings(self):
         self.msg("info;loading settings from " + self.settings.fileName())
-        frame_size_str = self.settings.value('image_frame_size')
+        frame_size_str = self.settings.value('display_frame_size')
         (width, height) = frame_size_str.split('x')
         self.image_size = (int(width), int(height))
         for index, widget in enumerate(self.keyWidgets):  # retreive all labeled parameters

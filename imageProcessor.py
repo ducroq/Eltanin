@@ -13,7 +13,7 @@ from math import sqrt
 from scipy.spatial import distance as dist
 from objectSignals import ObjectSignals
 from PyQt5.QtCore import QSettings, QThread, QTimer, QEventLoop, pyqtSignal, pyqtSlot
-
+from rectangle import Rectangle
 
 def auto_canny(image, sigma=0.33):
     # compute the median of the single channel pixel intensities
@@ -41,7 +41,8 @@ class ImageProcessor(QThread):
     confirmed = pyqtSignal() # internal signal
     diaphragmFound = pyqtSignal(np.ndarray)
     wellFound = pyqtSignal(np.ndarray)
-    returnSharpnessScore = pyqtSignal(float)
+#     returnSharpnessScore = pyqtSignal(float)
+    quality = pyqtSignal(float)
     
 
     def __init__(self):
@@ -51,7 +52,7 @@ class ImageProcessor(QThread):
         self.loadSettings()
         self.image = None
         self.diaphragm = None
-        self.focusROI = None
+        self.ROI = None
         self.well = None
         self.fps = FPS().start()
         
@@ -90,24 +91,29 @@ class ImageProcessor(QThread):
         Initialise the runner function with passed args, kwargs.
         '''
         try:
+            if self.isInterruptionRequested():
+                self.finished.emit()
+                return            
             if self.image is not None:
                 self.fps.update()
+                
+                qual = self.computeQuality()                
+                self.quality.emit(qual)
+                self.msg("info;image quality = {:.2f}".format(qual))                
 
                 # annotate the image
-                if self.diaphragm is not None or self.well is not None or self.focusROI is not None:
+                if self.diaphragm is not None or self.well is not None or self.ROI is not None:
                     img = cv2.cvtColor(self.image, cv2.COLOR_GRAY2RGB).copy() if len(self.image.shape) < 3 else self.image.copy()
                     if self.diaphragm is not None:
                         cv2.circle(img, (self.diaphragm[0],self.diaphragm[1]), self.diaphragm[2], (0,255,0), 2)
                     if self.well is not None:
                         cv2.circle(img, (self.well[0],self.well[1]), self.well[2], (0,0,255), 2)
-                    if self.focusROI is not None:
-                        cv2.rectangle(img,(self.focusROI[0], self.focusROI[1]),
-                                      (self.focusROI[0] + self.focusROI[2], self.focusROI[1] + self.focusROI[3]), (255,0,0), 1)
-
+                    if self.ROI is not None:
+                        cv2.rectangle(img, self.ROI.p1, self.ROI.p2, (255, 0, 0), 2)
                 else:
                     img = self.image
                     
-                self.signals.result.emit(img)
+                self.signals.result.emit(img)                
                 self.confirmed.emit()
                 
         except Exception as err:
@@ -247,65 +253,50 @@ class ImageProcessor(QThread):
                 self.signals.error.emit((type(err), err.args, traceback.format_exc()))
 
 
-    @pyqtSlot()
-    def computeSharpnessScore(self):
-        if self.image is not None:
-            try:
-                self.msg("info;computing sharpness")
-
-                # Compute ROI
-                if self.diaphragm is None:
-                    ROI_leg = int(round(self.image.shape[0]/4))
-                    ROI = [round(self.image.shape[1]/2) - ROI_leg,
-                           round(self.image.shape[0]/2) - ROI_leg,
-                           2*ROI_leg, 2*ROI_leg]
-                else:
-                    ROI_leg = int(round(self.diaphragm[2]/sqrt(2)))
-                    ROI = [self.diaphragm[0] - ROI_leg,
-                           self.diaphragm[1] - ROI_leg,
-                           2*ROI_leg, 2*ROI_leg]                      
-                
-                # crop image
-                img = self.image[ROI[1]:ROI[1]+ROI[3], ROI[0]:ROI[0]+ROI[2]]
-
-                # find blobs
-                img = cv2.bilateralFilter(img,10,20,50)
-                bw_img = cv2.adaptiveThreshold(img, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV,5,2)
-                _, _, stats, centroids = cv2.connectedComponentsWithStats(bw_img)
-
-                # select blobs with right size
-                minBlobArea = 10**2
-                maxBlobArea = int((ROI_leg/10)**2)
-                ROIareas = stats[:,2]*stats[:,3]
-                indices = np.where( (ROIareas > minBlobArea) & (ROIareas < maxBlobArea) )[0]                    
-
-                if len(indices) > 0:
-                    # select single blob closest to centroid
-                    dist = np.linalg.norm(centroids - [ROI_leg,ROI_leg],axis=1)
-                    index = indices[np.argmin(dist[indices])]
-
-                    # define and shift wrt ROI
-                    blobROI = stats[index]
-                    self.focusROI = blobROI
-                    self.focusROI[0] += ROI[0]
-                    self.focusROI[1] += ROI[1]
+    def computeQuality(self):
+        # Compute ROI
+        if self.diaphragm is None:
+            ROI_leg = int(min(self.image.shape)/4)
+            x, y = int(self.image.shape[1]/2), int(self.image.shape[0]/2)
+        else:
+            ROI_leg = int(round(self.diaphragm[2]/sqrt(2)))
+            x, y = self.diaphragm[0], self.diaphragm[1]
+        
+        # crop image
+        self.ROI = Rectangle(x - ROI_leg, y - ROI_leg, x + ROI_leg, y + ROI_leg)
+        img = self.image[self.ROI.y1:self.ROI.y2, self.ROI.x1:self.ROI.x2]
+        
+        # further adapt ROI depending on target to focus on
+        focustarget = self.settings.value('autofocus/focustarget', None, type=int)
+        
+        if focustarget == 1:
+            # find blobs
+            filtered_img = cv2.bilateralFilter(img,10,20,50)
+            bw_img = cv2.adaptiveThreshold(filtered_img, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV,5,2)
+            _, _, stats, centroids = cv2.connectedComponentsWithStats(bw_img)
+            # select blobs with right sizes
+            minBlobArea = 10**2
+            maxBlobArea = int((ROI_leg/10)**2)
+            ROIareas = stats[:,2]*stats[:,3]
+            indices = np.where( (ROIareas > minBlobArea) & (ROIareas < maxBlobArea) )[0]
+            if len(indices) > 0:
+                # select single blob closest to centroid
+                dist = np.linalg.norm(centroids - [ROI_leg,ROI_leg],axis=1)
+                index = indices[np.argmin(dist[indices])]
+                # grab image 
+                blobROI = stats[index]
+                img = img[blobROI[1]:blobROI[1]+blobROI[3], blobROI[0]:blobROI[0]+blobROI[2]]
+                # redefine ROI
+                self.ROI = Rectangle(self.ROI.x1 + blobROI[0],
+                                     self.ROI.y1 + blobROI[1],
+                                     self.ROI.x1 + blobROI[0] + blobROI[2],
+                                     self.ROI.y1 + blobROI[1] + blobROI[3])
                     
-                    # sharpness computation
-                    img = img[blobROI[1]:blobROI[1]+blobROI[3], blobROI[0]:blobROI[0]+blobROI[2]]
-                    norm_img = cv2.normalize(img, None, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_32F)
-                    edge_laplace = cv2.Laplacian(norm_img, ddepth=cv2.CV_32F, ksize=3)
-                    sharpness = 100*np.percentile(edge_laplace, 90)
-                    variance = 100*np.var(edge_laplace)
-                    # maximum and variance of Laplacian are indicators of sharpness, maximum maybe noisy, so choose 90% percentile instead
-                ##                            var(edge_laplace)/np.mean(edge_laplace)
-                    self.returnSharpnessScore.emit(sharpness)
-
-                    self.msg("info;sharpness = {:.2f}, variance = {:.2f} in focus ROI ({:d},{:d}), ({:d},{:,d})".format(sharpness, variance, self.focusROI[0], self.focusROI[1], self.focusROI[2], self.focusROI[3]))
-                else:
-                    self.returnSharpnessScore.emit(0)
-                    self.msg("error;sharpness unknown, no object found")
-
-                        
-            except Exception as err:
-                traceback.print_exc()
-                self.signals.error.emit((type(err), err.args, traceback.format_exc()))
+        # Compute variance of Laplacian in RoI
+        img = cv2.normalize(img,dst=None,dtype=cv2.CV_32F)
+        edge_laplace = cv2.Laplacian(img, ddepth=cv2.CV_32F, ksize=5)
+        sharpness = 100*np.percentile(edge_laplace, 90)
+        variance = 100*np.var(edge_laplace)
+        # maximum and variance of Laplacian are indicators of sharpness, maximum maybe noisy, so choose 90% percentile instead
+        return sharpness               
+   
