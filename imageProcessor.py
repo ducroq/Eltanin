@@ -294,9 +294,11 @@ class ImageProcessor(QThread):
                     
         # Compute variance of Laplacian in RoI
         img = cv2.normalize(img,dst=None,dtype=cv2.CV_32F)
+#         img = cv2.normalize(img,dst=None,alpha=1,beta=1,norm_type=cv2.NORM_L2,dtype=cv2.CV_32F)
+        # see https://docs.opencv.org/2.4/modules/core/doc/operations_on_arrays.html#cv2.normalize
         edge_laplace = cv2.Laplacian(img, ddepth=cv2.CV_32F, ksize=5)
         sharpness = 100*np.percentile(edge_laplace, 90)
-        variance = 100*np.var(edge_laplace)
+        variance = 1e5*np.var(edge_laplace)
         # maximum and variance of Laplacian are indicators of sharpness, maximum maybe noisy, so choose 90% percentile instead
-        return sharpness               
+        return variance               
    

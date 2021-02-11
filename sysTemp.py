@@ -63,7 +63,6 @@ class SystemTemperatures(QObject):
     def msg(self, text):
         if text:
             text = self.__class__.__name__ + ";" + str(text)
-            print(text)
             self.signals.message.emit(text)
         
 

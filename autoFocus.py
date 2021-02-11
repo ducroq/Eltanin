@@ -11,7 +11,6 @@ from wait import wait_ms, wait_signal
 ## When the maximum IQ is found, the focus is to the value where max IQ occured.
 ## Then, the procedure is repeated N_n times, where in every iteration the grid spacing is halved.
 ##
-## TODO: extend to 2 dimensianol search by including optimization of the rotation angle
 
 class AutoFocus(QObject):
 ##    Gridsearch of a hyperparameter H (image quality) over a process variable P (focus).
@@ -21,103 +20,74 @@ class AutoFocus(QObject):
     postMessage = pyqtSignal(str)
     focussed = pyqtSignal(float)
     rPositionReached = pyqtSignal() # repeat signal
+    rImageQualityUpdated = pyqtSignal() # repeat signal
     
-    def __init__(self, doPlot=False):
+    def __init__(self,display=False):
         super().__init__()
-        self.doPlot = doPlot
-        
+        self.display = display
         self.k = 0 # plot position counter
-        self.running = False
         
     @pyqtSlot(float)
     def start(self, P_centre=0):
-        N_p=5  # Grid size
-        dP=2 # Grid spacing, percentage change per step     
-        N_n=5 # Maximum number of iterations
-        if self.running == True:
-            self.postMessage.emit('{}: error; autofocus is already running'.format(self.__class__.__name__))
-        else:
-            self.N_n = N_n  # Maximum number of iterations
-            if (N_p & 1) != 1:  # Enforce N_p to be odd
-                N_p += 1
-                self.postMessage.emit("{}: info; warning : Grid size must be odd, so changed to: {}".format(self.__class__.__name__, N_p))                
-            self.N_p = N_p  # Grid size
-            self.dP = dP  # Grid spacing, percentage change in VC current per step        
-            self.H = np.zeros(shape=(self.N_p,1), dtype=float)
-            self.P = np.zeros(shape=(self.N_p,1), dtype=float)
-            self.P_centre = P_centre  # Set grid centre point
-            self.n = 0  # First iteration
-            self.p = 0  #
-            self.p_sign = 1  # Process variable is rising
-            if self.doPlot and (self.k == 0): # we have not plotted before
-                self.k = 0 # plot position counter
-                self.fig, (self.ax1, self.ax2) = plt.subplots(2,1)
-                self.graph1 = None
-                self.ax1.grid(True)
-                self.ax1.set_ylabel("Image quality")
-                self.graph2 = None
-                self.ax2.grid(True)
-                self.ax2.set_ylabel("Voice coil value")
-                plt.show(block=False)        
-            self.P[self.p] = self.P_centre-self.dP*int((self.N_p-1)/2)  # current process parameter
-            self.setFocus.emit(self.P[self.p])  # Move to starting point of grid search
-            self.postMessage.emit("{}: info; running".format(self.__class__.__name__))
-            self.running = True
-            wait_ms(5000)
+        N_p = 5 # half of total grid points
+        dP = .25 # actuater step size
+        avg_H = 5 # number of quality gauges to average
+
+        self.postMessage.emit("{}: info; running".format(self.__class__.__name__))
+
+        if self.display and (self.k == 0): # we have not plotted before
+            self.fig, (self.ax1, self.ax2) = plt.subplots(2,1)
+            self.graph1 = None
+            self.ax1.grid(True)
+            self.ax1.set_ylabel("Image quality")
+            self.graph2 = None
+            self.ax2.grid(True)
+            self.ax2.set_ylabel("Voice coil value")
+            plt.show(block=False)        
+        
+        P = P_centre + dP*(np.arange(2*N_p, dtype=float) - N_p)
+        H = np.zeros_like(P)
+
+        self.setFocus.emit(P[0])  # Move to starting point of grid search
+        wait_signal(self.rPositionReached, 10000)
+        wait_ms(3000)        
+        
+        for i,p in enumerate(P):
+            self.setFocus.emit(p)
+            wait_signal(self.rPositionReached, 10000)
+            wait_ms(500)
+            # average a few image quality values
+            H[i] = 0
+            for j in range(avg_H):
+                wait_signal(self.rImageQualityUpdated, 10000)
+                H[i] += self.imgQual
+            H[i] /= avg_H
+            # plot measurement
+            if self.display:
+                # draw grid lines
+                self.graph1 = self.ax1.plot(self.k, H[i], 'bo')[0]
+                self.graph2 = self.ax2.plot(self.k, p, 'bo')[0]
+                # We need to draw *and* flush
+                self.fig.canvas.draw()
+                self.fig.canvas.flush_events()
+                self.k += 1
+        # wrap up        
+        max_ind = np.argmax(H)
+        P_centre = P[max_ind] # set new grid centre point
+        value = round(P_centre,2)
+        self.setFocus.emit(value)  # set next focus
+        wait_signal(self.rPositionReached, 10000)
+        self.focussed.emit(value) # publish focus
 
     @pyqtSlot(float)
-    def imageQualityUpdate(self, imgQual=0):
-        try:
-            if self.running:  # autofocus is active
-                if imgQual <= 0:
-                    self.postMessage.emit("{}: error; image quality indicator unreliable".format(self.__class__.__name__))
-                    self.running = False                    
-                    return
-
-##                self.postMessage.emit("{}: info; image quality updated to {}".format(self.__class__.__name__, imgQual))
-                self.H[self.p] = imgQual
-                if self.doPlot:
-               # draw grid lines
-                    self.graph1 = self.ax1.plot(self.k, self.H[self.p], 'bo')[0]
-                    self.graph2 = self.ax2.plot(self.k, self.P[self.p], 'bo')[0]
-                # We need to draw *and* flush
-                    self.fig.canvas.draw()
-                    self.fig.canvas.flush_events()
-                    self.k += 1
-##                print(self.name + ": " + str(self.n) + ", " + str(self.p) + ", " + str(self.p_sign) + ": " + str(self.P_centre) + ": " +  str(self.P[self.p]) + ": " + str(self.H[self.p]))
-                self.p += self.p_sign  # Move to next grid point
-                if (0 <= self.p < self.N_p): # We're on the grid, so set parameter value
-                    self.P[self.p] = self.P_centre + (self.dP/(self.n+1))*(self.p-int((self.N_p-1)/2))  # compute next grid point
-                    value = self.P[self.p]
-                else:
-                    self.n += 1  # New iteration
-                    max_ind = np.argmax(self.H)
-                    self.P_centre = self.P[max_ind,0] # set new grid centre point
-                    if self.n < self.N_n:  # still iterating
-                        self.P.fill(0) # clear parameter array 
-                        self.H.fill(0) # clear hyperparameter array 
-                        self.p_sign *= -1 # Reverse direction
-                        self.p += self.p_sign  # Reset current grid point
-                        self.P[self.p] = self.P_centre + (self.dP/(self.n+1))*(self.p-int((self.N_p-1)/2))  # compute next grid point
-                        value = self.P[self.p]
-                    else: # done
-                        self.running = False
-                        value = round(self.P_centre,2)
-                        self.focussed.emit(value) # publish focus
-                        self.postMessage.emit("{}: info; final image quality {} at process value {}".format(self.__class__.__name__, self.H[max_ind], value))
-                        
-                value = np.round(value,2)
-                self.setFocus.emit(value)  # set next focus
-                wait_signal(self.rPositionReached, 10000)
-#                 wait_ms(2000)
-                
-        except Exception as err:
-            self.postMessage.emit("{}: error; type: {}, args: {}".format(self.__class__.__name__, type(err), err.args))            
-        
+    def imageQualityUpdate(self, imgQual):
+        self.imgQual = imgQual
+        self.rImageQualityUpdated.emit()
+          
     @pyqtSlot()
     def stop(self):
         try:
-            if self.doPlot:
+            if self.display:
                 plt.close()                
             self.postMessage.emit("{}: info; stopping worker".format(self.__class__.__name__))
             self.running = False

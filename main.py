@@ -8,10 +8,6 @@ if not is_raspberry_pi():
 
 import os, sys
 import numpy as np
-# Note: PySide QThread implementation seems very buggy (2020), so reverted to PyQt
-##from PySide2.QtGui import *
-##from PySide2.QtWidgets import *
-##from PySide2.QtCore import *
 from PyQt5.QtCore import Qt, QSettings
 from PyQt5.QtWidgets import QApplication
 from mainWindow import MainWindow
@@ -22,7 +18,7 @@ from sysTemp import SystemTemperatures
 from imageProcessor import ImageProcessor
 from batchProcessor import BatchProcessor
 from autoFocus import AutoFocus
-
+from checkWiFi import CheckWiFi
 
 if __name__ == "__main__":
         
@@ -35,7 +31,8 @@ if __name__ == "__main__":
     st = SystemTemperatures(interval=10, alarm_temperature=55)
     ip = ImageProcessor()
     bp = BatchProcessor()
-    af = AutoFocus(doPlot=True)
+    af = AutoFocus(display=True)
+    cf = CheckWiFi()
 
     # Start threads
     vs.start()
@@ -61,9 +58,7 @@ if __name__ == "__main__":
     vs.captured.connect(bp.snapshotTaken, type=Qt.QueuedConnection)
     bp.recordClip.connect(vs.recordClip, type=Qt.QueuedConnection)
     vs.captured.connect(bp.clipRecorded, type=Qt.QueuedConnection)
-#     bp.computeSharpnessScore.connect(ip.computeSharpnessScore, type=Qt.QueuedConnection)
-#     ip.returnSharpnessScore.connect(bp.setSharpnessScore, type=Qt.QueuedConnection)
-    bp.startAutoFocus.connect(lambda: af.start(mw.stageZTranslation.value()))
+    bp.startAutoFocus.connect(af.start)
     af.focussed.connect(bp.focussedSlot)
     bp.stopCamera.connect(vs.stop, type=Qt.QueuedConnection)
     bp.startCamera.connect(vs.initStream, type=Qt.QueuedConnection)    
@@ -71,7 +66,6 @@ if __name__ == "__main__":
     af.setFocus.connect(mw.stageZTranslation.setValue)
     ph.positionReached.connect(af.positionReached, type=Qt.QueuedConnection)
     ip.quality.connect(af.imageQualityUpdate, type=Qt.DirectConnection)
-#     af.focussed.connect(tl.focussedSlot)
     
     # Connect GUI signals
     mw.runButton.clicked.connect(bp.start)
@@ -93,15 +87,6 @@ if __name__ == "__main__":
     bp.signals.progress.connect(mw.updateProgressBar)
     bp.signals.ready.connect(mw.enableButtons)
 
-    # temporary: 
-##    bp.gotoXY.connect(lambda x,y: mw.stageXTranslation.setValue(x))
-##    bp.gotoXY.connect(lambda x,y: mw.stageYTranslation.setValue(y))
-##    bp.gotoZ.connect(mw.stageZTranslation.setValue)
-##    ph.signals.home.connect(lambda: mw.stageXTranslation.setValue(0))
-##    ph.signals.home.connect(lambda: mw.stageYTranslation.setValue(0))
-##    ph.signals.home.connect(lambda: mw.stageZTranslation.setValue(0))
-    
-    
     # Connect logging signals
     vs.postMessage.connect(lw.append)
     ph.signals.message.connect(lw.append)
@@ -114,6 +99,7 @@ if __name__ == "__main__":
     bp.signals.error.connect(lambda s: "error;{}".format(lw.append(s[2])))
     bp.setLogFileName.connect(lw.setLogFileName)
     af.postMessage.connect(lw.append)
+    cf.postMessage.connect(lw.append)
 
     # Connect closing signals
     st.failure.connect(mw.close, type=Qt.QueuedConnection)

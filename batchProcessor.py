@@ -9,7 +9,7 @@ import re
 import time
 import traceback
 import numpy as np
-import smtplib, ss
+import smtplib, ssl
 from webdav3.client import Client
 from webdav3.exceptions import WebDavException
 from math import sqrt
@@ -151,7 +151,7 @@ class BatchProcessor(QObject):
     setLogFileName = pyqtSignal(str)
     stopCamera = pyqtSignal()
     startCamera = pyqtSignal()
-    startAutoFocus = pyqtSignal()
+    startAutoFocus = pyqtSignal(float)
     focussed = pyqtSignal() # repeater signal    
 
     def __init__(self):
@@ -326,34 +326,35 @@ class BatchProcessor(QObject):
         start_run_time_s = time.time()
         self.setLightPWM.emit(self.lightLevel)
         self.startCamera.emit()
-        self.msg("info;goto first well")
-        x = self.wells[0].location[0]
-        y = self.wells[0].location[1]
-        self.gotoXY.emit(x,y, True)
+        self.msg("info;go home")
+        self.gotoXY.emit(0, 0, False)
         self.wait_signal(self.rPositionReached, 10000)
+        self.msg("info;goto first well")
+        self.gotoXY.emit(self.wells[0].location[0], self.wells[0].location[1], True)
+        self.wait_signal(self.rPositionReached, 10000)
+#         self.wait_ms(60000) # wait for camera to adjust to light
         
         for well in self.wells:
-            x, y, z = tuple(well.location)
-            self.msg("info;gauging well {:s} at ({:.3f}, {:.3f}, {:.3f})".format(well.name, x,y,z))
-
+            self.msg("info;gauging well {:s})".format(well.name))
+                     
             # split goto xyz command 
-            self.gotoX.emit(x,True)
+            self.gotoX.emit(well.location[0],True)
             self.wait_signal(self.rPositionReached, 10000)
-            self.gotoY.emit(y,True)
+            self.gotoY.emit(well.location[1],True)
             self.wait_signal(self.rPositionReached, 10000)
-            self.gotoZ.emit(z)
+            self.gotoZ.emit(well.location[2])
             self.wait_signal(self.rPositionReached, 10000)
             
             # autofocus
             if self.batch_settings.value('run/autofocus', False, type=bool):
                 self.new_z = 0
-                self.startAutoFocus.emit()
+                self.startAutoFocus.emit(well.location[2])
                 self.wait_signal(self.focussed, 100000)
                 if self.new_z != 0:
                     well.location[2] = self.new_z
                 else:
                     # focus failed, so return to initial z position
-                    self.gotoZ.emit(z)
+                    self.gotoZ.emit(well.location[2])
                     self.wait_signal(self.rPositionReached, 10000)
                     
             try:
@@ -365,7 +366,6 @@ class BatchProcessor(QObject):
         
             # take snapshot or video
             self.wait_ms(2000)
-            # prefix = os.path.sep.join([self.storage_path, well.name, str(well.position) + "_" + str(well.location) + "_" + str(well.sharpnessScore)])
             prefix = os.path.sep.join([self.image_storage_path, str(well.position) + "_" + str(well.location)])
             
             if self.snapshot:
