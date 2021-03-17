@@ -376,9 +376,9 @@ class BatchProcessor(QObject):
                 self.wait_signal(self.rClipRecorded) # clip recorded
                 
             try:
-                # push image
+                # push data
                 remote_path = os.path.sep.join([self.webdav_path,well.name])
-                self.msg("info;pushing image to {}".format(remote_path))
+                self.msg(": info; pushing data to {}".format(remote_path))
                 self.webdav_client.mkdir(remote_path)
                 self.webdav_client.push(remote_directory=remote_path, local_directory=self.image_storage_path)
                 # push log file

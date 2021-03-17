@@ -21,6 +21,8 @@ from autoFocus import AutoFocus
 from checkWiFi import CheckWiFi
 
 if __name__ == "__main__":
+
+    settings = QSettings("settings.ini", QSettings.IniFormat)
         
     # Create event loop and instantiate objects    
     app = QApplication(sys.argv)
@@ -34,9 +36,19 @@ if __name__ == "__main__":
     af = AutoFocus(display=True)
     cf = CheckWiFi()
 
-    # Start threads
-    vs.start()
-    ph.start()
+    # Connect logging signals
+    bp.setLogFileName.connect(lw.setLogFileName)
+    vs.postMessage.connect(lw.append)
+    ph.signals.message.connect(lw.append)
+    ph.signals.error.connect(lambda s: "error;{}".format(lw.append(s[2])))
+    st.signals.message.connect(lw.append)
+    st.signals.error.connect(lambda s: "error;{}".format(lw.append(s[2])))
+    ip.signals.message.connect(lw.append)
+    ip.signals.error.connect(lambda s: "error;{}".format(lw.append(s[2])))
+    bp.signals.message.connect(lw.append)
+    bp.signals.error.connect(lambda s: "error;{}".format(lw.append(s[2])))
+    af.postMessage.connect(lw.append)
+    cf.postMessage.connect(lw.append)
     
     # Control signals, some explicitly of QueuedConnection type to prevent signal loss
     st.alarm.connect(lambda: ph.setFanPWM(1.0))
@@ -87,20 +99,6 @@ if __name__ == "__main__":
     bp.signals.progress.connect(mw.updateProgressBar)
     bp.signals.ready.connect(mw.enableButtons)
 
-    # Connect logging signals
-    vs.postMessage.connect(lw.append)
-    ph.signals.message.connect(lw.append)
-    ph.signals.error.connect(lambda s: "error;{}".format(lw.append(s[2])))
-    st.signals.message.connect(lw.append)
-    st.signals.error.connect(lambda s: "error;{}".format(lw.append(s[2])))
-    ip.signals.message.connect(lw.append)
-    ip.signals.error.connect(lambda s: "error;{}".format(lw.append(s[2])))
-    bp.signals.message.connect(lw.append)
-    bp.signals.error.connect(lambda s: "error;{}".format(lw.append(s[2])))
-    bp.setLogFileName.connect(lw.setLogFileName)
-    af.postMessage.connect(lw.append)
-    cf.postMessage.connect(lw.append)
-
     # Connect closing signals
     st.failure.connect(mw.close, type=Qt.QueuedConnection)
     bp.signals.finished.connect(mw.close, type=Qt.QueuedConnection)
@@ -112,11 +110,12 @@ if __name__ == "__main__":
     mw.signals.finished.connect(lw.close, type=Qt.QueuedConnection)
     mw.signals.finished.connect(af.stop, type=Qt.QueuedConnection)
 
-    # Start the show
-    settings = QSettings("settings.ini", QSettings.IniFormat)
-    lw.append("App started")
+    # Start threads
+    ph.start()
     vs.initStream()    
     vs.setStoragePath(settings.value('temp_folder'))
+    
+    # Start the show
     mw.move(50,0)
     mw.resize(1500, 700)
     lw.move(50, 750)

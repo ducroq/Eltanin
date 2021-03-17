@@ -81,7 +81,6 @@ class ImageProcessor(QThread):
     def msg(self, text):
         if text:
             text = self.__class__.__name__ + ";" + str(text)
-            print(text)
             self.signals.message.emit(text)
             
             
@@ -99,7 +98,7 @@ class ImageProcessor(QThread):
                 
                 qual = self.computeQuality()                
                 self.quality.emit(qual)
-                self.msg("info;image quality = {:.2f}".format(qual))                
+#                 self.msg("info;image quality = {:.2f}".format(qual))                
 
                 # annotate the image
                 if self.diaphragm is not None or self.well is not None or self.ROI is not None:

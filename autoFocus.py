@@ -62,6 +62,7 @@ class AutoFocus(QObject):
                 wait_signal(self.rImageQualityUpdated, 10000)
                 H[i] += self.imgQual
             H[i] /= avg_H
+            self.postMessage.emit("{}: info; average image quality: {} at position: {}".format(self.__class__.__name__, H[i], p))
             # plot measurement
             if self.display:
                 # draw grid lines
@@ -72,8 +73,12 @@ class AutoFocus(QObject):
                 self.fig.canvas.flush_events()
                 self.k += 1
         # wrap up        
-        max_ind = np.argmax(H)
-        P_centre = P[max_ind] # set new grid centre point
+        coef_variance = np.std(H) / np.mean(H)
+        if coef_variance > 0.1:
+            # check if there is sufficient variation
+            max_ind = np.argmax(H)
+            P_centre = P[max_ind] # set new grid centre point
+        self.postMessage.emit("{}: info; optimal image quality at position: {}".format(self.__class__.__name__, P_centre))
         value = round(P_centre,2)
         self.setFocus.emit(value)  # set next focus
         wait_signal(self.rPositionReached, 10000)
@@ -89,7 +94,7 @@ class AutoFocus(QObject):
         try:
             if self.display:
                 plt.close()                
-            self.postMessage.emit("{}: info; stopping worker".format(self.__class__.__name__))
+            
             self.running = False
         except Exception as err:
             self.postMessage.emit("{}: error; type: {}, args: {}".format(self.__class__.__name__, type(err), err.args))

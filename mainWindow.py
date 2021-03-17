@@ -300,7 +300,7 @@ class MainWindow(QMainWindow):
 
     def loadSettings(self):
         self.msg("info;loading settings from " + self.settings.fileName())
-        frame_size_str = self.settings.value('display_frame_size')
+        frame_size_str = self.settings.value('frame_size')
         (width, height) = frame_size_str.split('x')
         self.image_size = (int(width), int(height))
         for index, widget in enumerate(self.keyWidgets):  # retreive all labeled parameters
