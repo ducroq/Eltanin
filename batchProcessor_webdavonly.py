@@ -16,7 +16,6 @@ from math import sqrt
 from PyQt5.QtCore import QSettings, QObject, QTimer, QEventLoop, pyqtSignal, pyqtSlot
 from PyQt5.QtWidgets import QDialog, QFileDialog, QPushButton, QLabel, QSpinBox, QDoubleSpinBox, QVBoxLayout, QGridLayout
 from objectSignals import ObjectSignals
-import subprocess
 
 
 class Well:  
@@ -158,8 +157,7 @@ class BatchProcessor(QObject):
     def __init__(self):
         super().__init__()
 
-        self.settings = QSettings("settings.ini", QSettings.IniFormat) 
-        self.conn_settings = QSettings("connections.ini", QSettings.IniFormat)
+        self.settings = QSettings("settings.ini", QSettings.IniFormat)        
         self.loadSettings()
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.run)
@@ -235,13 +233,13 @@ class BatchProcessor(QObject):
     def start(self):        
         # open storage folder
         # dlg = QFileDialog()
-        # self.local_storage_path = QFileDialog.getExistingDirectory(dlg, 'Open storage folder', '/media/pi/', QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks)
-        # if self.local_storage_path == "" or self.local_storage_path is None:
+        # self.storage_path = QFileDialog.getExistingDirectory(dlg, 'Open storage folder', '/media/pi/', QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks)
+        # if self.storage_path == "" or self.storage_path is None:
         #     return
-        self.local_storage_path = os.path.sep.join([os.getcwd(), self.settings.value('temp_folder')])
+        self.storage_path = os.path.sep.join([os.getcwd(), self.settings.value('temp_folder')])
 
         # clear temporary storage path
-        os.system('rm {:s}'.format(os.path.sep.join([self.local_storage_path, "*.*"])))
+        os.system('rm {:s}'.format(os.path.sep.join([self.storage_path, "*.*"])))
 
         # open batch definition file
         dlg = QFileDialog()
@@ -252,47 +250,29 @@ class BatchProcessor(QObject):
         self.loadBatchSettings()
 
         # copy batch definition file to storage folder
-        os.system('cp {:s} {:s}'.format(self.batch_file_name, self.local_storage_path))
+        os.system('cp {:s} {:s}'.format(self.batch_file_name, self.storage_path))
 
-        note_file_name = os.path.sep.join([self.local_storage_path, self.run_id + ".log"])
+        note_file_name = os.path.sep.join([self.storage_path, self.run_id + ".log"])
         self.setLogFileName.emit(note_file_name)
+        
+        # copy files to webdav host
+        conn_settings = QSettings("connections.ini", QSettings.IniFormat)
+        self.webdav_path = os.path.sep.join([conn_settings.value('webdav/storage_path'), self.run_id])
+        
+        self.webdav_options = {'webdav_hostname': conn_settings.value('webdav/hostname'),
+                               'webdav_login': conn_settings.value('webdav/login'),
+                               'webdav_password': conn_settings.value('webdav/password')
+                               }
+        try:
+            self.webdav_client = Client(self.webdav_options)
+            self.webdav_client.mkdir(self.webdav_path)
+            self.webdav_client.push(remote_directory=self.webdav_path, local_directory=self.storage_path)
+        except WebDavException as err:
+            traceback.print_exc()
+            self.signals.error.emit((type(err), err.args, traceback.format_exc()))        
 
-        # set up connectivity
-        if self.batch_settings.contains('connections/storage'):
-            if self.batch_settings.value('connections/storage') == 'rclone':
-                # rclone to path provided in connections.ini file
-                self.server_storage_path = self.conn_settings.value('rclone/storage_path') + ':' + self.batch_settings.value('run/id')
-
-                try:
-                    subprocess.run(["rclone", "mkdir", self.server_storage_path])
-                    subprocess.run(["rclone", "copy", "--no-traverse", self.local_storage_path, self.server_storage_path])
-                    # create directory structure on server
-                    for well in self.wells:
-                        subprocess.run(["rclone", "mkdir", os.path.sep.join([self.server_storage_path, well.name])])                    
-                except Exception as err:
-                    self.msg("error;type: {}, args: {}".format(type(err), err.args))
-                self.msg("info;rclone connection to {}".format(self.server_storage_path))
-
-            elif self.batch_settings.value('connections/storage') == 'wbedav':
-                # open WebDAV connection to server, using credentials from connections.ini file
-                self.server_storage_path = os.path.sep.join([self.conn_settings.value('webdav/storage_path'), self.run_id])
-
-                options = { 'webdav_hostname': self.conn_settings.value('webdav/hostname'),
-                            'webdav_login': self.conn_settings.value('webdav/login'),
-                            'webdav_password': self.conn_settings.value('webdav/password') }
-                try:
-                    self.webdav_client = Client(options)
-                    self.webdav_client.mkdir(self.server_storage_path)
-                    self.webdav_client.push(local_directory=self.local_storage_path, remote_directory=self.server_storage_path)
-                except WebDavException as err:
-                    self.msg("error;type: {}, args: {}".format(type(err), err.args))
-                self.msg("info;WebDAV connection to {}: {}".format(self.conn_settings.value('webdav/hostname'),
-                                                                   self.server_storage_path))
-            else:
-                self.msg("error; unknown remote")
-                
         # create temporary image storage path
-        self.image_storage_path = os.path.sep.join([self.local_storage_path,'img'])
+        self.image_storage_path = os.path.sep.join([self.storage_path,'img'])
         if not os.path.exists(self.image_storage_path):
             os.makedirs(self.image_storage_path)
         
@@ -394,18 +374,18 @@ class BatchProcessor(QObject):
             if self.videoclip and self.videoclip_length > 0:
                 self.recordClip.emit(prefix, self.videoclip_length)
                 self.wait_signal(self.rClipRecorded) # clip recorded
-
-            # push capture to remote
-            temp_path = os.path.sep.join([self.server_storage_path,well.name])
-            if self.batch_settings.contains('connections/storage'):
-                try:
-                    if self.batch_settings.value('connections/storage') == 'rclone':
-                        subprocess.run(["rclone", "copy", "--no-traverse", self.local_image_storage_path, temp_path])
-                    elif self.batch_settings.value('connections/storage') == 'wbedav':
-                        self.webdav_client.push(local_directory=self.local_image_storage_path,
-                                                remote_directory=temp_path)
-                except Exception as err:
-                    self.postMessage.emit("{}: error; type: {}, args: {}".format(self.__class__.__name__, type(err), err.args))
+                
+            try:
+                # push data
+                remote_path = os.path.sep.join([self.webdav_path,well.name])
+                self.msg(": info; pushing data to {}".format(remote_path))
+                self.webdav_client.mkdir(remote_path)
+                self.webdav_client.push(remote_directory=remote_path, local_directory=self.image_storage_path)
+                # push log file
+                self.webdav_client.push(remote_directory=self.webdav_path, local_directory=self.storage_path)
+            except WebDavException as err:
+                traceback.print_exc()
+                self.signals.error.emit((type(err), err.args, traceback.format_exc()))                 
                 
         # Wrapup current round of acquisition     
         self.setLightPWM.emit(0.00)
@@ -445,15 +425,16 @@ class BatchProcessor(QObject):
                 self.signals.finished.emit()
                 
     def sendNotification(self, message):
+        conn_settings = QSettings("connections.ini", QSettings.IniFormat)
         port = 465  # For SSL
         context = ssl.create_default_context()  # Create a secure SSL context
         try:
             with smtplib.SMTP_SSL("smtp.gmail.com", port, context=context) as server:
-                login = self.conn_settings.value('smtp/login')
-                password = self.conn_settings.value('smtp/password')
+                login = conn_settings.value('smtp/login')
+                password = conn_settings.value('smtp/password')
                 server.login(login, password)
-                server.sendmail(self.conn_settings.value('smtp/login'), \
-                                self.conn_settings.value('subscriber/email'), \
+                server.sendmail(conn_settings.value('smtp/login'), \
+                                conn_settings.value('subscriber/email'), \
                                 message)
         except Exception as err:
             traceback.print_exc()
